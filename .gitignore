@@ -1,0 +1,17 @@
+target/
+dist/
+artifacts/
+.dev/
+.agents/
+skills-lock.json
+*.pdb
+*.exe
+*.log
+log.txt
+clearline-driver/artifacts/
+clearline-driver/**/Debug/
+clearline-driver/**/Release/
+clearline-driver/**/*.user
+clearline-driver/**/*.tlog
+clearline-driver/**/*.lastbuildstate
+third_party/vb-cable/VBCABLE_Driver_Pack45.zip

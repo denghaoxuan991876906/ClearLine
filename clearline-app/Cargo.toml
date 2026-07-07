@@ -1,0 +1,28 @@
+[package]
+name = "clearline-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["deepfilternet", "aec"]
+aec = ["clearline-core/aec"]
+deepfilternet = ["clearline-core/deepfilternet"]
+
+[dependencies]
+anyhow.workspace = true
+clearline-core = { path = "../clearline-core" }
+eframe = { workspace = true, default-features = false, features = ["default_fonts", "glow", "x11"] }
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
