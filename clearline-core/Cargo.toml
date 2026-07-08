@@ -22,6 +22,7 @@ df = { package = "deep_filter", git = "https://github.com/Rikorose/DeepFilterNet
 flate2 = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 nnnoiseless = { workspace = true, optional = true }
+rubato.workspace = true
 tar = { workspace = true, optional = true }
 thiserror.workspace = true
 

@@ -4,6 +4,7 @@ pub mod frame;
 pub mod pipeline;
 pub mod preprocess;
 pub mod reference;
+pub mod resample;
 pub mod suppressor;
 pub mod virtual_mic;
 
@@ -26,6 +27,7 @@ pub use preprocess::{WindNoiseConfig, WindNoiseReducer};
 #[cfg(windows)]
 pub use reference::{LoopbackReferenceCapture, SharedReferenceFrameBuffer};
 pub use reference::{ReferenceCaptureStats, ReferenceFrameBuffer};
+pub use resample::StreamingSampleRateConverter;
 pub use suppressor::{
     create_suppressor, create_suppressor_with_deepfilternet_bundle,
     try_create_suppressor_with_deepfilternet_bundle, AudioFrameFormat, BypassSuppressor,
