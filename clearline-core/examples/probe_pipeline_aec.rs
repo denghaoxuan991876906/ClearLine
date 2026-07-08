@@ -19,9 +19,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|device| device.is_default())
         .or_else(|| input_devices.first())
         .ok_or_else(|| "no input microphone device found".to_owned())?;
+    let output_device = enumerator
+        .output_devices()?
+        .into_iter()
+        .find(|device| is_vb_cable_render_device_name(device.name()))
+        .ok_or_else(|| {
+            "VB-CABLE render endpoint not found: expected CABLE Input or CABLE In".to_owned()
+        })?;
 
-    let config = AudioPipelineConfig::for_virtual_microphone(
+    let config = AudioPipelineConfig::new(
         input_device.id().clone(),
+        output_device.id().clone(),
         SuppressorMode::LowLatency,
     )
     .with_echo_cancellation(true);
@@ -37,15 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "ClearLine AudioPipeline AEC probe started: input=\"{}\" backend={:?} input={} Hz / {} ch output={} Hz / {} ch",
+        "ClearLine AudioPipeline AEC probe started: input=\"{}\" output=\"{}\" backend={:?} input={} Hz / {} ch output={} Hz / {} ch",
         input_device.name(),
+        output_device.name(),
         echo_backend,
         runtime_info.input_format().sample_rate_hz(),
         runtime_info.input_format().channels(),
         runtime_info.output_format().sample_rate_hz(),
         runtime_info.output_format().channels()
     );
-    println!("Keep system audio playing during this 10s probe.");
+    println!("Keep system audio playing during this 10s probe. Monitor CABLE Output if needed.");
 
     let mut max_reference_level = 0.0_f32;
     for second in 0..10 {
@@ -89,4 +98,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_reference_level
     );
     Ok(())
+}
+
+#[cfg(windows)]
+fn is_vb_cable_render_device_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    (normalized.contains("cable input") || normalized.contains("cable in"))
+        && !normalized.contains("cable-a")
+        && !normalized.contains("cable-b")
+        && !normalized.contains("cable-c")
+        && !normalized.contains("cable-d")
 }

@@ -13,8 +13,8 @@ ClearLine 是一个 Windows-only 的通用麦克风降噪工具。
 - `clearline-app`：基于 `eframe/egui` 的中文桌面 UI。
 - Windows 上通过 `cpal` 枚举输入和输出设备。
 - Windows 上启动输入 stream、输出 stream，并通过环形缓冲做直通输出。
-- 直通阶段会让输出 stream 使用输入采样率，并在写入缓冲前做基础声道转换，避免输入/输出默认格式不一致导致电子音。
-- 虚拟麦克风 / VB-CABLE 主路径固定为 48 kHz 处理域；真实麦克风如果是 44.1 kHz、96 kHz、16 kHz 等默认格式，会先通过 `rubato 0.14` 重采样到 48 kHz，再进入回音消除、抗风噪、DeepFilterNet 和虚拟麦克风输出。
+- 输出到音频设备时会使用输出设备自己的默认采样率 / 声道数；真实麦克风会先通过 `rubato 0.14` 重采样到输出设备采样率，再进入回音消除、抗风噪、DeepFilterNet 和输出缓冲，避免输入/输出默认格式不一致导致电子音或无声。
+- VB-CABLE 主路径会强制选择播放端点 `CABLE Input` 或 `CABLE In 16 Ch`，不再因为旧设置里的系统扬声器 ID 而误输出到非 VB-CABLE 设备。
 - 输出端启动时会等待约 20ms 预缓冲，避免启动瞬间误报欠载。
 - 音频回调会复用临时缓冲，减少实时路径中的堆分配和延迟抖动。
 - `FrameChunker` 可以把连续音频样本切成固定大小帧，并保留不足一帧的尾部样本，为 DeepFilterNet 等固定帧后端接入做准备。
@@ -41,7 +41,7 @@ ClearLine 是一个 Windows-only 的通用麦克风降噪工具。
 
 - 自研 Windows 虚拟音频驱动。
 - DeepFilterNet 后台推理队列容量、迟到帧补偿策略和状态页诊断阈值调优。
-- 所有输出设备后端的完整采样率 / 声道数格式协商；当前重点支持虚拟麦克风主路径的输入重采样。
+- 所有输出设备后端的高级独占模式 / 低延迟格式协商；当前默认使用输出设备默认共享格式并做输入重采样。
 - 安装时自动修改 Windows 默认录音/播放设备。
 - 账号系统、云端处理、多麦克风混音、直播声卡功能。
 
@@ -93,13 +93,21 @@ cargo run -p clearline-core --features aec --example probe_realtime_aec
 
 预期输出：10 秒内持续打印 `processed_frames`，`reference_level` 在系统音频播放时应高于 0，最后打印 `ClearLine realtime AEC probe OK`。这个命令用于验证“默认播放设备 loopback 参考音频 + 默认麦克风输入 + AEC3 worker”能在线跑通，不用于听感验收。
 
+验证 VB-CABLE 自身是否能从播放端点传到录音端点：
+
+```powershell
+cargo run -p clearline-core --example inject_vb_cable_sine
+```
+
+预期结果：20 秒内 Windows 录音设备里的 `CABLE Output` 有电平波动，监听 `CABLE Output` 能听到 440 Hz 测试音。这个命令绕过 ClearLine 主程序，只验证 VB-CABLE 驱动和端点连通性。
+
 验证真实 `AudioPipeline -> VB-CABLE` 路径：
 
 ```powershell
 cargo run -p clearline-core --features aec --example probe_pipeline_aec
 ```
 
-预期输出：`backend=Aec3`，`reference_level` 在系统音频播放时高于 0，最后打印 `ClearLine AudioPipeline AEC probe OK`。这个命令会启动生产音频管线并写入当前配置的 VB-CABLE 播放端点，用于确认主程序会走同一条 AEC API 路径。
+预期输出：启动行里应显示 `output="CABLE Input"` 或 `output="CABLE In 16 Ch ..."`，`backend=Aec3`，`input_level` 说话时应高于 0，`reference_level` 在系统音频播放时高于 0，最后打印 `ClearLine AudioPipeline AEC probe OK`。这个命令会启动生产音频管线并写入 VB-CABLE 播放端点，用于确认主程序会走同一条 AEC API 路径。
 
 ## 开发命令
 
