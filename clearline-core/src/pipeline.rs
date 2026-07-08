@@ -1486,7 +1486,11 @@ fn start_reference_capture_for_echo(
     echo_cancellation: EchoCancellerRuntimeInfo,
 ) -> ClearLineResult<Option<LoopbackReferenceCapture>> {
     if echo_cancellation.backend() == EchoCancellerBackend::Aec3 {
-        LoopbackReferenceCapture::start_default(1_000).map(Some)
+        LoopbackReferenceCapture::start_default_with_target_format(
+            1_000,
+            echo_cancellation.format(),
+        )
+        .map(Some)
     } else {
         Ok(None)
     }
