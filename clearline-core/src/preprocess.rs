@@ -7,6 +7,7 @@ pub struct AutoGainConfig {
     silence_rms: f32,
     max_gain: f32,
     limiter_ceiling: f32,
+    peak_headroom: f32,
     attack: f32,
     release: f32,
 }
@@ -41,10 +42,11 @@ impl Default for AutoGainConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            target_rms: 0.18,
+            target_rms: 0.12,
             silence_rms: 0.01,
-            max_gain: 4.0,
+            max_gain: 2.5,
             limiter_ceiling: 0.891,
+            peak_headroom: 0.96,
             attack: 0.20,
             release: 0.65,
         }
@@ -69,25 +71,48 @@ impl AutoGainProcessor {
         }
 
         let rms = signal_rms(samples);
-        let target_gain = if rms < self.config.silence_rms {
+        let peak = signal_peak(samples);
+        let ceiling = self.config.limiter_ceiling.clamp(0.1, 1.0);
+        let peak_ceiling = ceiling * self.config.peak_headroom.clamp(0.5, 1.0);
+        let loudness_gain = if rms < self.config.silence_rms {
             1.0
         } else {
             (self.config.target_rms / rms).clamp(1.0, self.config.max_gain)
         };
-
-        let smoothing = if target_gain > self.current_gain {
-            self.config.attack
+        let peak_limited_gain = if peak > f32::EPSILON {
+            loudness_gain.min(peak_ceiling / peak)
         } else {
-            self.config.release
+            loudness_gain
         };
-        self.current_gain += (target_gain - self.current_gain) * smoothing.clamp(0.0, 1.0);
+        let target_gain = peak_limited_gain.clamp(0.0, self.config.max_gain);
 
-        let ceiling = self.config.limiter_ceiling.clamp(0.1, 1.0);
+        if target_gain < self.current_gain {
+            let release = self.config.release.clamp(0.0, 1.0);
+            self.current_gain += (target_gain - self.current_gain) * release;
+            self.current_gain = self.current_gain.min(target_gain);
+        } else {
+            let attack = self.config.attack.clamp(0.0, 1.0);
+            self.current_gain += (target_gain - self.current_gain) * attack;
+        }
+
         for sample in samples {
             let finite = if sample.is_finite() { *sample } else { 0.0 };
             *sample = (finite * self.current_gain).clamp(-ceiling, ceiling);
         }
     }
+}
+
+fn signal_peak(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .map(|sample| {
+            if sample.is_finite() {
+                sample.abs()
+            } else {
+                0.0
+            }
+        })
+        .fold(0.0_f32, f32::max)
 }
 
 fn signal_rms(samples: &[f32]) -> f32 {
@@ -254,6 +279,28 @@ mod tests {
         processor.process_interleaved(&mut samples);
 
         assert!(rms_for_test(&samples) < 0.002);
+    }
+
+    #[test]
+    fn auto_gain_preserves_transient_shape_when_peak_headroom_is_low() {
+        let format = AudioFrameFormat::new(48_000, 1);
+        let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
+        let mut samples = vec![0.04_f32; 480];
+        samples[120] = 0.80_f32;
+        let original_ratio = samples[120].abs() / samples[0].abs();
+
+        processor.process_interleaved(&mut samples);
+
+        let processed_ratio = samples[120].abs() / samples[0].abs().max(f32::EPSILON);
+        assert!(
+            processed_ratio > original_ratio * 0.95,
+            "transient ratio changed too much: original={original_ratio}, processed={processed_ratio}"
+        );
+        assert!(
+            samples[120].abs() < 0.86,
+            "transient should stay below limiter knee instead of being hard-clipped: {}",
+            samples[120]
+        );
     }
 
     #[test]
