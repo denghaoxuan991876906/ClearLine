@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+#[cfg(any(windows, test))]
+use crate::resample::StreamingSampleRateConverter;
 use crate::AudioFrameFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,6 +115,61 @@ impl ReferenceFrameBuffer {
     }
 }
 
+#[cfg(any(windows, test))]
+struct LoopbackReferenceInputProcessor {
+    target_format: AudioFrameFormat,
+    converter: StreamingSampleRateConverter,
+    converted: Vec<f32>,
+}
+
+#[cfg(any(windows, test))]
+impl LoopbackReferenceInputProcessor {
+    fn new(
+        source_format: AudioFrameFormat,
+        target_format: AudioFrameFormat,
+    ) -> crate::ClearLineResult<Self> {
+        if source_format.channels() != target_format.channels() {
+            return Err(crate::ClearLineError::StreamBuild(format!(
+                "loopback reference resampler expects matching channel counts, source {} channel(s), target {} channel(s)",
+                source_format.channels(),
+                target_format.channels()
+            )));
+        }
+
+        Ok(Self {
+            target_format,
+            converter: StreamingSampleRateConverter::new(
+                source_format.sample_rate_hz(),
+                target_format.sample_rate_hz(),
+                source_format.channels(),
+            )?,
+            converted: Vec::new(),
+        })
+    }
+
+    fn process_interleaved(
+        &mut self,
+        input: &[f32],
+        buffer: &mut ReferenceFrameBuffer,
+    ) -> crate::ClearLineResult<()> {
+        if buffer.format() != self.target_format {
+            return Err(crate::ClearLineError::StreamBuild(format!(
+                "loopback reference target format mismatch: buffer {:?}, processor {:?}",
+                buffer.format(),
+                self.target_format
+            )));
+        }
+
+        self.converted.clear();
+        self.converter
+            .process_interleaved(input, &mut self.converted)?;
+        if !self.converted.is_empty() {
+            buffer.push_interleaved(&self.converted);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 use std::{
     sync::{Arc, Mutex},
@@ -159,12 +216,6 @@ impl SharedReferenceFrameBuffer {
             .expect("loopback reference buffer mutex poisoned")
             .pop_mono_frame(output)
     }
-
-    fn push_interleaved(&self, samples: &[f32]) {
-        if let Ok(mut buffer) = self.inner.lock() {
-            buffer.push_interleaved(samples);
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -194,6 +245,17 @@ impl LoopbackReferenceCapture {
         Self::start_for_output_device(device, capacity_ms)
     }
 
+    pub fn start_default_with_target_format(
+        capacity_ms: u32,
+        target_format: AudioFrameFormat,
+    ) -> crate::ClearLineResult<Self> {
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or_else(|| {
+            crate::ClearLineError::DeviceNotFound("default output device".to_owned())
+        })?;
+        Self::start_for_output_device_with_target_format(device, capacity_ms, target_format)
+    }
+
     pub fn start_for_output_device(
         device: cpal::Device,
         capacity_ms: u32,
@@ -201,46 +263,127 @@ impl LoopbackReferenceCapture {
         let supported_config = device
             .default_output_config()
             .map_err(|error| crate::ClearLineError::StreamBuild(error.to_string()))?;
-        let sample_format = supported_config.sample_format();
         let stream_config = supported_config.config();
-        let format = AudioFrameFormat::new(stream_config.sample_rate, stream_config.channels);
+        let source_format =
+            AudioFrameFormat::new(stream_config.sample_rate, stream_config.channels);
+        Self::start_for_output_device_with_supported_config(
+            device,
+            capacity_ms,
+            supported_config.sample_format(),
+            stream_config,
+            source_format,
+        )
+    }
+
+    pub fn start_for_output_device_with_target_format(
+        device: cpal::Device,
+        capacity_ms: u32,
+        target_format: AudioFrameFormat,
+    ) -> crate::ClearLineResult<Self> {
+        let supported_config = device
+            .default_output_config()
+            .map_err(|error| crate::ClearLineError::StreamBuild(error.to_string()))?;
+        let stream_config = supported_config.config();
+        let source_format =
+            AudioFrameFormat::new(stream_config.sample_rate, stream_config.channels);
+        let buffer_format =
+            AudioFrameFormat::new(target_format.sample_rate_hz(), source_format.channels());
+        Self::start_for_output_device_with_supported_config(
+            device,
+            capacity_ms,
+            supported_config.sample_format(),
+            stream_config,
+            buffer_format,
+        )
+    }
+
+    fn start_for_output_device_with_supported_config(
+        device: cpal::Device,
+        capacity_ms: u32,
+        sample_format: SampleFormat,
+        stream_config: cpal::StreamConfig,
+        format: AudioFrameFormat,
+    ) -> crate::ClearLineResult<Self> {
         let capacity_samples =
             ((u64::from(format.sample_rate_hz()) * u64::from(capacity_ms.max(10))) / 1_000).max(1)
                 as usize;
         let buffer =
             SharedReferenceFrameBuffer::new(ReferenceFrameBuffer::new(format, capacity_samples));
 
+        let source_format =
+            AudioFrameFormat::new(stream_config.sample_rate, stream_config.channels);
+
         let stream = match sample_format {
-            SampleFormat::I8 => {
-                build_loopback_input_stream::<i8>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::I16 => {
-                build_loopback_input_stream::<i16>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::I32 => {
-                build_loopback_input_stream::<i32>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::I64 => {
-                build_loopback_input_stream::<i64>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::U8 => {
-                build_loopback_input_stream::<u8>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::U16 => {
-                build_loopback_input_stream::<u16>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::U32 => {
-                build_loopback_input_stream::<u32>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::U64 => {
-                build_loopback_input_stream::<u64>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::F32 => {
-                build_loopback_input_stream::<f32>(&device, stream_config, buffer.clone())
-            }
-            SampleFormat::F64 => {
-                build_loopback_input_stream::<f64>(&device, stream_config, buffer.clone())
-            }
+            SampleFormat::I8 => build_loopback_input_stream::<i8>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::I16 => build_loopback_input_stream::<i16>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::I32 => build_loopback_input_stream::<i32>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::I64 => build_loopback_input_stream::<i64>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::U8 => build_loopback_input_stream::<u8>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::U16 => build_loopback_input_stream::<u16>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::U32 => build_loopback_input_stream::<u32>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::U64 => build_loopback_input_stream::<u64>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::F32 => build_loopback_input_stream::<f32>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
+            SampleFormat::F64 => build_loopback_input_stream::<f64>(
+                &device,
+                stream_config,
+                source_format,
+                format,
+                buffer.clone(),
+            ),
             unsupported => Err(crate::ClearLineError::UnsupportedSampleFormat(format!(
                 "loopback output {unsupported}"
             ))),
@@ -289,19 +432,30 @@ impl LoopbackReferenceCapture {
 fn build_loopback_input_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
+    source_format: AudioFrameFormat,
+    target_format: AudioFrameFormat,
     buffer: SharedReferenceFrameBuffer,
 ) -> crate::ClearLineResult<cpal::Stream>
 where
     T: SizedSample + Sample + Send + 'static,
     f32: FromSample<T>,
 {
+    let mut processor = LoopbackReferenceInputProcessor::new(source_format, target_format)?;
+    let mut samples = Vec::new();
+
     device
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                let mut samples = Vec::with_capacity(data.len());
+                samples.clear();
                 samples.extend(data.iter().map(|sample| sample.to_sample::<f32>()));
-                buffer.push_interleaved(&samples);
+                let mut inner = buffer
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Err(error) = processor.process_interleaved(&samples, &mut inner) {
+                    eprintln!("ClearLine loopback reference resampling error: {error}");
+                }
             },
             move |error| {
                 eprintln!("ClearLine loopback reference stream error: {error}");
@@ -314,6 +468,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(windows, test))]
     use crate::AudioFrameFormat;
 
     #[test]
@@ -366,5 +521,37 @@ mod tests {
         assert!(buffer.pop_mono_frame(&mut frame));
         assert_eq!(frame, vec![0.3, 0.4, 0.5]);
         assert_eq!(buffer.stats().dropped_samples(), 2);
+    }
+
+    #[test]
+    fn reference_input_processor_resamples_source_to_target_rate_before_buffering() {
+        let source_format = AudioFrameFormat::new(44_100, 2);
+        let target_format = AudioFrameFormat::new(48_000, 2);
+        let mut processor =
+            LoopbackReferenceInputProcessor::new(source_format, target_format).unwrap();
+        let mut buffer = ReferenceFrameBuffer::new(target_format, 8_000);
+        let input = stereo_sine_wave(44_100, 440.0, 4_410);
+
+        processor.process_interleaved(&input, &mut buffer).unwrap();
+
+        let buffered = buffer.stats().buffered_samples();
+        assert!(
+            (buffered as isize - 4_800).abs() <= 128,
+            "expected about 4800 buffered target-rate frames, got {buffered}"
+        );
+        assert_eq!(buffer.format(), target_format);
+    }
+
+    fn stereo_sine_wave(sample_rate_hz: u32, frequency_hz: f32, frames: usize) -> Vec<f32> {
+        let mut samples = Vec::with_capacity(frames * 2);
+        for frame in 0..frames {
+            let left =
+                (std::f32::consts::TAU * frequency_hz * frame as f32 / sample_rate_hz as f32).sin()
+                    * 0.5;
+            let right = -left;
+            samples.push(left);
+            samples.push(right);
+        }
+        samples
     }
 }
