@@ -14,9 +14,9 @@ use crate::echo::EchoCanceller;
 use crate::echo::NoopEchoCanceller;
 use crate::echo::{EchoCancellerBackend, EchoCancellerRuntimeInfo};
 #[cfg(windows)]
-use crate::preprocess::WindNoiseConfig;
+use crate::preprocess::{AutoGainConfig, WindNoiseConfig};
 #[cfg(any(windows, test))]
-use crate::preprocess::WindNoiseReducer;
+use crate::preprocess::{AutoGainProcessor, WindNoiseReducer};
 use crate::reference::ReferenceCaptureStats;
 #[cfg(any(windows, test))]
 use crate::reference::ReferenceFrameBuffer;
@@ -292,6 +292,7 @@ pub struct PipelineRuntimeInfo {
     suppressor: SuppressorRuntimeInfo,
     echo_cancellation: EchoCancellerRuntimeInfo,
     wind_noise_reduction_enabled: bool,
+    microphone_boost_enabled: bool,
     output_target: AudioOutputTarget,
 }
 
@@ -311,6 +312,7 @@ impl PipelineRuntimeInfo {
                 input_format,
             ),
             wind_noise_reduction_enabled: false,
+            microphone_boost_enabled: false,
             output_target,
         }
     }
@@ -343,6 +345,15 @@ impl PipelineRuntimeInfo {
 
     pub fn wind_noise_reduction_enabled(&self) -> bool {
         self.wind_noise_reduction_enabled
+    }
+
+    pub fn with_microphone_boost(mut self, enabled: bool) -> Self {
+        self.microphone_boost_enabled = enabled;
+        self
+    }
+
+    pub fn microphone_boost_enabled(&self) -> bool {
+        self.microphone_boost_enabled
     }
 
     pub fn output_target(&self) -> &AudioOutputTarget {
@@ -561,6 +572,7 @@ fn process_input_callback_frame(
     reference_buffer: Option<&mut dyn ReferenceFrameSource>,
     wind_noise_reducer: &mut WindNoiseReducer,
     suppressor: &mut dyn NoiseSuppressor,
+    auto_gain_processor: &mut AutoGainProcessor,
     input_channels: u16,
 ) -> ClearLineResult<()> {
     scratch.prepare_processed_buffer();
@@ -574,7 +586,9 @@ fn process_input_callback_frame(
         &mut scratch.reference_mono,
     )?;
     wind_noise_reducer.process_interleaved(&mut scratch.echo_cancelled);
-    suppressor.process(&scratch.echo_cancelled, &mut scratch.processed)
+    suppressor.process(&scratch.echo_cancelled, &mut scratch.processed)?;
+    auto_gain_processor.process_interleaved(&mut scratch.processed);
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -683,6 +697,7 @@ pub struct AudioPipelineConfig {
     suppression_strength: SuppressionStrength,
     wind_noise_reduction_enabled: bool,
     echo_cancellation_enabled: bool,
+    microphone_boost_enabled: bool,
     deepfilternet_model_bundle: Option<DeepFilterNetModelBundle>,
 }
 
@@ -699,6 +714,7 @@ impl AudioPipelineConfig {
             suppression_strength: SuppressionStrength::default(),
             wind_noise_reduction_enabled: false,
             echo_cancellation_enabled: false,
+            microphone_boost_enabled: true,
             deepfilternet_model_bundle: None,
         }
     }
@@ -714,6 +730,7 @@ impl AudioPipelineConfig {
             suppression_strength: SuppressionStrength::default(),
             wind_noise_reduction_enabled: false,
             echo_cancellation_enabled: false,
+            microphone_boost_enabled: true,
             deepfilternet_model_bundle: None,
         }
     }
@@ -759,6 +776,15 @@ impl AudioPipelineConfig {
 
     pub fn echo_cancellation_enabled(&self) -> bool {
         self.echo_cancellation_enabled
+    }
+
+    pub fn with_microphone_boost(mut self, enabled: bool) -> Self {
+        self.microphone_boost_enabled = enabled;
+        self
+    }
+
+    pub fn microphone_boost_enabled(&self) -> bool {
+        self.microphone_boost_enabled
     }
 
     pub fn with_deepfilternet_model_bundle(mut self, bundle: DeepFilterNetModelBundle) -> Self {
@@ -979,13 +1005,23 @@ impl AudioPipeline {
                     config.output_target().clone(),
                 )
                 .with_echo_cancellation(echo_cancellation)
-                .with_wind_noise_reduction(config.wind_noise_reduction_enabled());
+                .with_wind_noise_reduction(config.wind_noise_reduction_enabled())
+                .with_microphone_boost(config.microphone_boost_enabled());
                 let wind_noise_reducer = WindNoiseReducer::new(
                     processing_frame_format,
                     if config.wind_noise_reduction_enabled() {
                         WindNoiseConfig::enabled()
                     } else {
                         WindNoiseConfig::default()
+                    },
+                );
+
+                let auto_gain_processor = AutoGainProcessor::new(
+                    processing_frame_format,
+                    if config.microphone_boost_enabled() {
+                        AutoGainConfig::enabled()
+                    } else {
+                        AutoGainConfig::disabled()
                     },
                 );
 
@@ -1005,6 +1041,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1018,6 +1055,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1031,6 +1069,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1044,6 +1083,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1057,6 +1097,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1070,6 +1111,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1083,6 +1125,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1096,6 +1139,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1109,6 +1153,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1122,6 +1167,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
@@ -1239,13 +1285,23 @@ impl AudioPipeline {
                     config.output_target().clone(),
                 )
                 .with_echo_cancellation(echo_cancellation)
-                .with_wind_noise_reduction(config.wind_noise_reduction_enabled());
+                .with_wind_noise_reduction(config.wind_noise_reduction_enabled())
+                .with_microphone_boost(config.microphone_boost_enabled());
                 let wind_noise_reducer = WindNoiseReducer::new(
                     processing_frame_format,
                     if config.wind_noise_reduction_enabled() {
                         WindNoiseConfig::enabled()
                     } else {
                         WindNoiseConfig::default()
+                    },
+                );
+
+                let auto_gain_processor = AutoGainProcessor::new(
+                    processing_frame_format,
+                    if config.microphone_boost_enabled() {
+                        AutoGainConfig::enabled()
+                    } else {
+                        AutoGainConfig::disabled()
                     },
                 );
 
@@ -1265,6 +1321,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1277,6 +1334,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1289,6 +1347,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1301,6 +1360,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1313,6 +1373,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1325,6 +1386,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1337,6 +1399,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1349,6 +1412,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1361,6 +1425,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1373,6 +1438,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        auto_gain_processor,
                         sample_rate_converter,
                         input_stream_format.channels,
                     ),
@@ -1535,6 +1601,7 @@ fn build_input_passthrough_stream<T>(
     mut echo_canceller: Box<dyn EchoCanceller + Send>,
     mut reference_buffer: Option<SharedReferenceFrameBuffer>,
     mut wind_noise_reducer: WindNoiseReducer,
+    mut auto_gain_processor: AutoGainProcessor,
     mut sample_rate_converter: StreamingSampleRateConverter,
     input_channels: u16,
     output_channels: u16,
@@ -1569,6 +1636,7 @@ where
                     reference_source,
                     &mut wind_noise_reducer,
                     suppressor.as_mut(),
+                    &mut auto_gain_processor,
                     input_channels,
                 ) {
                     eprintln!("ClearLine input processing error: {error}");
@@ -1602,6 +1670,7 @@ fn build_input_virtual_microphone_stream<T>(
     mut echo_canceller: Box<dyn EchoCanceller + Send>,
     mut reference_buffer: Option<SharedReferenceFrameBuffer>,
     mut wind_noise_reducer: WindNoiseReducer,
+    mut auto_gain_processor: AutoGainProcessor,
     mut sample_rate_converter: StreamingSampleRateConverter,
     input_channels: u16,
 ) -> ClearLineResult<cpal::Stream>
@@ -1635,6 +1704,7 @@ where
                     reference_source,
                     &mut wind_noise_reducer,
                     suppressor.as_mut(),
+                    &mut auto_gain_processor,
                     input_channels,
                 ) {
                     eprintln!("ClearLine input processing error: {error}");
@@ -1696,7 +1766,7 @@ mod tests {
     use super::*;
     use crate::device::DeviceId;
     use crate::echo::{EchoCanceller, EchoCancellerBackend, EchoCancellerRuntimeInfo};
-    use crate::preprocess::{WindNoiseConfig, WindNoiseReducer};
+    use crate::preprocess::{AutoGainConfig, AutoGainProcessor, WindNoiseConfig, WindNoiseReducer};
     use crate::reference::ReferenceFrameBuffer;
     #[cfg(any(windows, test))]
     use crate::suppressor::{
@@ -1977,6 +2047,38 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_config_enables_microphone_boost_by_default() {
+        let config = AudioPipelineConfig::new(
+            DeviceId::new("mic-1"),
+            DeviceId::new("out-1"),
+            SuppressorMode::HighQuality,
+        );
+
+        assert!(config.microphone_boost_enabled());
+        assert!(!config
+            .with_microphone_boost(false)
+            .microphone_boost_enabled());
+    }
+
+    #[test]
+    fn runtime_info_exposes_microphone_boost_state() {
+        let info = PipelineRuntimeInfo::new(
+            AudioFrameFormat::new(48_000, 1),
+            AudioFrameFormat::new(48_000, 2),
+            SuppressorRuntimeInfo::new(
+                SuppressorMode::HighQuality,
+                "deepfilternet-tract-worker",
+                480,
+                true,
+            ),
+            AudioOutputTarget::AudioDevice(DeviceId::new("out-1")),
+        );
+
+        assert!(!info.microphone_boost_enabled());
+        assert!(info.with_microphone_boost(true).microphone_boost_enabled());
+    }
+
+    #[test]
     fn pipeline_config_tracks_suppression_strength() {
         let config = AudioPipelineConfig::new(
             DeviceId::new("mic-1"),
@@ -2245,6 +2347,7 @@ mod tests {
         let mut echo = RecordingEchoCanceller::new(format);
         let mut suppressor = BypassSuppressor::new(format);
         let mut wind = WindNoiseReducer::new(format, WindNoiseConfig::default());
+        let mut auto_gain = AutoGainProcessor::new(format, AutoGainConfig::disabled());
         let mut scratch = InputCallbackScratch::default();
 
         scratch.copy_from_f32_samples(&[1.0, 0.75]);
@@ -2255,6 +2358,7 @@ mod tests {
             Some(&mut reference),
             &mut wind,
             &mut suppressor,
+            &mut auto_gain,
             2,
         )
         .unwrap();
