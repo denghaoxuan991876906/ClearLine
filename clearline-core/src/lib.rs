@@ -23,7 +23,7 @@ pub use pipeline::{
     AudioOutputTarget, AudioPipeline, AudioPipelineConfig, EchoReferenceDiagnostics, LevelMeter,
     PipelineMetrics, PipelineRuntimeInfo, PipelineState,
 };
-pub use preprocess::{WindNoiseConfig, WindNoiseReducer};
+pub use preprocess::{AutoGainConfig, AutoGainProcessor, WindNoiseConfig, WindNoiseReducer};
 #[cfg(windows)]
 pub use reference::{LoopbackReferenceCapture, SharedReferenceFrameBuffer};
 pub use reference::{ReferenceCaptureStats, ReferenceFrameBuffer};
