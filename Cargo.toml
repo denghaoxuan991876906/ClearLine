@@ -1,5 +1,5 @@
 [workspace]
-members = ["clearline-core", "clearline-app", "clearline-installer-helper", "clearline-setup"]
+members = ["clearline-core", "clearline-app", "clearline-installer-helper", "clearline-setup", "clearline-lab"]
 resolver = "2"
 
 [workspace.package]

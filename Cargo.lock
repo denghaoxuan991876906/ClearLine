@@ -403,6 +403,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clearline-lab"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "hound",
+]
+
+[[package]]
 name = "clearline-setup"
 version = "0.1.0"
 dependencies = [
