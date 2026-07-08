@@ -39,6 +39,8 @@ pub struct PersistedSettings {
     pub echo_cancellation_enabled: bool,
     #[serde(default = "default_noise_suppression_enabled")]
     pub noise_suppression_enabled: bool,
+    #[serde(default = "default_microphone_boost_enabled")]
+    pub microphone_boost_enabled: bool,
     #[serde(default)]
     pub start_on_login_enabled: bool,
     #[serde(default)]
@@ -59,6 +61,7 @@ impl Default for PersistedSettings {
             wind_noise_reduction_enabled: false,
             echo_cancellation_enabled: true,
             noise_suppression_enabled: true,
+            microphone_boost_enabled: true,
             start_on_login_enabled: false,
             deepfilter_model_dir: String::new(),
         }
@@ -86,6 +89,10 @@ fn default_echo_cancellation_enabled() -> bool {
 }
 
 fn default_noise_suppression_enabled() -> bool {
+    true
+}
+
+fn default_microphone_boost_enabled() -> bool {
     true
 }
 
@@ -212,6 +219,7 @@ mod tests {
         assert!(!settings.wind_noise_reduction_enabled);
         assert!(settings.echo_cancellation_enabled);
         assert!(settings.noise_suppression_enabled);
+        assert!(settings.microphone_boost_enabled);
         assert!(!settings.start_on_login_enabled);
         assert!(settings.deepfilter_model_dir.is_empty());
     }
@@ -240,6 +248,7 @@ mod tests {
         assert_eq!(settings.suppressor_mode, MODE_HIGH_QUALITY);
         assert!(settings.echo_cancellation_enabled);
         assert!(settings.noise_suppression_enabled);
+        assert!(settings.microphone_boost_enabled);
         assert!(!settings.start_on_login_enabled);
     }
 
@@ -257,6 +266,7 @@ mod tests {
             wind_noise_reduction_enabled: true,
             echo_cancellation_enabled: true,
             noise_suppression_enabled: false,
+            microphone_boost_enabled: false,
             start_on_login_enabled: true,
             deepfilter_model_dir: r"E:\Dev\模型onnx".to_owned(),
         };
@@ -265,6 +275,7 @@ mod tests {
         let restored: PersistedSettings = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored, settings);
+        assert!(!restored.microphone_boost_enabled);
     }
 
     #[test]
