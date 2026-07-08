@@ -21,6 +21,7 @@ ClearLine 是一个 Windows-only 的通用麦克风降噪工具。
 - `LowLatencySuppressor` 已走固定帧处理路径：当前按约 10ms 帧切片，首帧凑满前输出短暂静音。
 - `rnnoise` / `LowLatencySuppressor` 仍保留在 `clearline-core` 作为 legacy/dev feature，方便后续对比测试；默认 `clearline-app` 不再启用 RNNoise，也不再把它作为用户可选或回退路径。
 - 高质量降噪的用户路径以 DeepFilterNet 模型为准：应用会自动探测随安装包放在 `models/deepfilternet` 的 `enc.onnx`、`erb_dec.onnx`、`df_dec.onnx` 和 `config.ini`；当用户选择“高质量降噪”且打包模型有效时，启动后会选择 `deepfilternet-tract-worker` 后端。
+- DeepFilterNet 三档强度只调整最大噪声衰减上限：柔和 `12 dB`、标准 `24 dB`、强力 `50 dB`，不再使用 `100 dB` 近似无限制压制，以减少尾音被吞和门控感。
 - 当 DeepFilterNet 打包模型缺失、不完整或加载失败时，ClearLine 会拒绝启动降噪并显示模型不可用，不再静默回退到 RNNoise。
 - 可选 `抗风噪增强` 前处理：高通滤波、低频冲击限幅和 soft limiter。
 - 默认开启 `麦克风增强` 后处理：在 DeepFilterNet 后对处理后的音频做固定输出增益，并用 limiter 控制在约 -1 dBFS，避免 RMS 自动增益带来的抽吸感。

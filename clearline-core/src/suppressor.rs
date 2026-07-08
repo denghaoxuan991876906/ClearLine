@@ -1371,9 +1371,9 @@ fn deepfilternet_runtime_params(
     strength: SuppressionStrength,
 ) -> df::tract::RuntimeParams {
     let atten_lim_db = match strength {
-        SuppressionStrength::Gentle => 18.0,
-        SuppressionStrength::Balanced => 36.0,
-        SuppressionStrength::Strong => 100.0,
+        SuppressionStrength::Gentle => 12.0,
+        SuppressionStrength::Balanced => 24.0,
+        SuppressionStrength::Strong => 50.0,
     };
 
     df::tract::RuntimeParams::default_with_ch(channels).with_atten_lim(atten_lim_db)
@@ -2217,6 +2217,23 @@ mod tests {
         assert_eq!(
             strong.runtime_info().strength(),
             Some(SuppressionStrength::Strong)
+        );
+    }
+
+    #[cfg(feature = "deepfilternet")]
+    #[test]
+    fn deepfilternet_strength_uses_conservative_attenuation_limits() {
+        assert_eq!(
+            deepfilternet_runtime_params(1, SuppressionStrength::Gentle).atten_lim_db,
+            12.0
+        );
+        assert_eq!(
+            deepfilternet_runtime_params(1, SuppressionStrength::Balanced).atten_lim_db,
+            24.0
+        );
+        assert_eq!(
+            deepfilternet_runtime_params(1, SuppressionStrength::Strong).atten_lim_db,
+            50.0
         );
     }
 
