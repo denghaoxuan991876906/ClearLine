@@ -77,6 +77,7 @@ struct ClearLineApp {
     suppression_strength: SuppressionStrength,
     wind_noise_reduction_enabled: bool,
     echo_cancellation_enabled: bool,
+    microphone_boost_enabled: bool,
     start_on_login_enabled: bool,
     selected_tab: AppTab,
     pipeline: AudioPipeline,
@@ -232,6 +233,7 @@ impl ClearLineApp {
             suppression_strength: SuppressionStrength::default(),
             wind_noise_reduction_enabled: false,
             echo_cancellation_enabled: true,
+            microphone_boost_enabled: true,
             start_on_login_enabled: false,
             selected_tab: default_app_tab(),
             pipeline: AudioPipeline::new(),
@@ -354,6 +356,7 @@ impl ClearLineApp {
             suppression_strength_from_setting(&settings.suppression_strength);
         self.wind_noise_reduction_enabled = settings.wind_noise_reduction_enabled;
         self.noise_suppression_enabled = settings.noise_suppression_enabled;
+        self.microphone_boost_enabled = settings.microphone_boost_enabled;
         self.start_on_login_enabled = settings.start_on_login_enabled;
         self.echo_cancellation_enabled = if is_legacy_settings {
             true
@@ -412,6 +415,7 @@ impl ClearLineApp {
             wind_noise_reduction_enabled: self.wind_noise_reduction_enabled,
             echo_cancellation_enabled: self.echo_cancellation_enabled,
             noise_suppression_enabled: self.noise_suppression_enabled,
+            microphone_boost_enabled: self.microphone_boost_enabled,
             start_on_login_enabled: self.start_on_login_enabled,
             deepfilter_model_dir: String::new(),
         }
@@ -474,6 +478,15 @@ impl ClearLineApp {
             return;
         }
         self.echo_cancellation_enabled = enabled;
+        self.save_settings_after_user_change();
+        self.apply_runtime_change_if_running();
+    }
+
+    fn set_microphone_boost_enabled(&mut self, enabled: bool) {
+        if self.microphone_boost_enabled == enabled {
+            return;
+        }
+        self.microphone_boost_enabled = enabled;
         self.save_settings_after_user_change();
         self.apply_runtime_change_if_running();
     }
@@ -544,7 +557,8 @@ impl ClearLineApp {
         let mut config = AudioPipelineConfig::new(device_id, output_device_id, mode)
             .with_suppression_strength(self.suppression_strength)
             .with_wind_noise_reduction(self.effective_wind_noise_reduction_enabled())
-            .with_echo_cancellation(self.effective_echo_cancellation_enabled());
+            .with_echo_cancellation(self.effective_echo_cancellation_enabled())
+            .with_microphone_boost(self.microphone_boost_enabled);
         if mode == SuppressorMode::HighQuality {
             if model_status != DeepFilterModelUiStatus::Valid {
                 let message = deepfilter_startup_warning(mode, &model_status)
@@ -1009,6 +1023,29 @@ impl ClearLineApp {
                     self.set_echo_cancellation_enabled(!self.echo_cancellation_enabled);
                 }
             }
+
+            ui.add_space(8.0);
+
+            {
+                let selected = self.microphone_boost_enabled;
+                let button = egui::Button::new(
+                    RichText::new(microphone_boost_config_label(selected))
+                        .size(14.0)
+                        .color(if selected { Color32::WHITE } else { ios_text() }),
+                )
+                .fill(if selected {
+                    Color32::from_rgb(52, 199, 89)
+                } else {
+                    ios_control_fill()
+                })
+                .stroke(Stroke::NONE)
+                .corner_radius(18)
+                .min_size(Vec2::new(150.0, 36.0));
+
+                if ui.add(button).clicked() {
+                    self.set_microphone_boost_enabled(!self.microphone_boost_enabled);
+                }
+            }
         });
     }
 
@@ -1078,6 +1115,12 @@ impl ClearLineApp {
             info_row(ui, "强度", suppression_strength_label(runtime_info));
             ui.add_space(6.0);
             info_row(ui, "抗风噪", wind_reduction_runtime_label(runtime_info));
+            ui.add_space(6.0);
+            info_row(
+                ui,
+                "麦克风增强",
+                microphone_boost_runtime_label(runtime_info),
+            );
             ui.add_space(6.0);
             info_row(
                 ui,
@@ -1425,6 +1468,26 @@ fn echo_cancellation_config_label(enabled: bool) -> &'static str {
     } else {
         "回音消除：关闭"
     }
+}
+
+fn microphone_boost_config_label(enabled: bool) -> &'static str {
+    if enabled {
+        "麦克风增强：开启"
+    } else {
+        "麦克风增强：关闭"
+    }
+}
+
+fn microphone_boost_runtime_label(runtime_info: Option<&PipelineRuntimeInfo>) -> String {
+    runtime_info
+        .map(|info| {
+            if info.microphone_boost_enabled() {
+                "已启用".to_owned()
+            } else {
+                "未启用".to_owned()
+            }
+        })
+        .unwrap_or_else(|| "未连接音频流".to_owned())
 }
 
 fn echo_cancellation_runtime_label(runtime_info: Option<&PipelineRuntimeInfo>) -> String {
@@ -2027,6 +2090,29 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_snapshot_includes_microphone_boost() {
+        let mut app = ClearLineApp::new_without_loading_settings_for_tests();
+        app.microphone_boost_enabled = false;
+
+        let settings = app.persisted_settings_snapshot();
+
+        assert!(!settings.microphone_boost_enabled);
+    }
+
+    #[test]
+    fn microphone_boost_labels_are_chinese() {
+        assert_eq!(microphone_boost_config_label(true), "麦克风增强：开启");
+        assert_eq!(microphone_boost_config_label(false), "麦克风增强：关闭");
+        assert_eq!(microphone_boost_runtime_label(None), "未连接音频流");
+    }
+
+    #[test]
+    fn app_start_source_passes_microphone_boost_to_pipeline() {
+        let source = include_str!("main.rs");
+        assert!(source.contains(".with_microphone_boost(self.microphone_boost_enabled)"));
+    }
+
+    #[test]
     fn app_settings_snapshot_includes_current_choices() {
         let mut app = ClearLineApp::new_without_loading_settings_for_tests();
         app.devices = vec![AudioInputDevice::new("mic-id", "Saved Mic", true)];
@@ -2038,6 +2124,7 @@ mod tests {
         app.wind_noise_reduction_enabled = true;
         app.echo_cancellation_enabled = true;
         app.noise_suppression_enabled = false;
+        app.microphone_boost_enabled = false;
         app.start_on_login_enabled = true;
 
         let settings = app.persisted_settings_snapshot();
@@ -2051,6 +2138,7 @@ mod tests {
         assert!(settings.wind_noise_reduction_enabled);
         assert!(settings.echo_cancellation_enabled);
         assert!(!settings.noise_suppression_enabled);
+        assert!(!settings.microphone_boost_enabled);
         assert!(settings.start_on_login_enabled);
         assert!(
             settings.deepfilter_model_dir.is_empty(),
@@ -2267,6 +2355,7 @@ mod tests {
             wind_noise_reduction_enabled: false,
             echo_cancellation_enabled: false,
             noise_suppression_enabled: true,
+            microphone_boost_enabled: true,
             start_on_login_enabled: false,
             deepfilter_model_dir: String::new(),
         });
