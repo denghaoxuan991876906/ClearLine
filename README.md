@@ -23,7 +23,7 @@ ClearLine 是一个 Windows-only 的通用麦克风降噪工具。
 - 高质量降噪的用户路径以 DeepFilterNet 模型为准：应用会自动探测随安装包放在 `models/deepfilternet` 的 `enc.onnx`、`erb_dec.onnx`、`df_dec.onnx` 和 `config.ini`；当用户选择“高质量降噪”且打包模型有效时，启动后会选择 `deepfilternet-tract-worker` 后端。
 - 当 DeepFilterNet 打包模型缺失、不完整或加载失败时，ClearLine 会拒绝启动降噪并显示模型不可用，不再静默回退到 RNNoise。
 - 可选 `抗风噪增强` 前处理：高通滤波、低频冲击限幅和 soft limiter。
-- 默认开启 `麦克风增强` 后处理：在 DeepFilterNet 后自动提高偏小人声响度，并用峰值 limiter 控制在约 -1 dBFS，避免明显爆音和削波。
+- 默认开启 `麦克风增强` 后处理：在 DeepFilterNet 后对处理后的音频做固定输出增益，并用 limiter 控制在约 -1 dBFS，避免 RMS 自动增益带来的抽吸感。
 - 显示实时输入电平、实际处理后端、降噪强度、抗风噪状态、麦克风增强状态、DeepFilterNet 打包模型状态、输入/输出格式、固定帧大小、缓冲水位、估算缓冲延迟、算法帧延迟、欠载样本和溢出丢弃样本。
 - 顶部常驻开启/关闭开关，主界面只保留“设备 / 状态”两个 tab；默认进入设备页。
 - 用户路径收敛为“高质量降噪”：默认使用 DeepFilterNet + 回音消除；无降噪直通和低延迟 RNNoise 仅作为 core 内部/开发测试路径，不再作为 UI 模式入口。
@@ -285,7 +285,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-authenticode
 - `OutputDeviceSelector`：记录并解析用户选择的输出设备。
 - `FrameChunker`：把连续音频流切成固定大小帧。
 - `WindNoiseReducer`：可选抗风噪前处理，高通滤波后再做冲击限幅和 soft limiter。
-- `AutoGainProcessor`：默认开启的麦克风增强后处理，自动提升偏小人声 RMS，并通过 limiter 防止输出削波。
+- `AutoGainProcessor`：默认开启的麦克风增强后处理，对降噪后的音频施加固定输出增益，并通过 limiter 防止输出削波。
 - `NoiseSuppressor`：降噪器 trait。
 - `BypassSuppressor`：无降噪直通，仅用于内部测试管线和安全回退，不作为用户可选模式。
 - `LowLatencySuppressor`：legacy/dev 低延迟路径，已通过 `FrameChunker` 进入固定帧处理路径；`rnnoise` feature 下会在 48kHz 输入启用 `nnnoiseless` 后端，多声道会内部 downmix/upmix，并支持 `柔和 / 标准 / 强力` 三档强度。默认 App 不启用该路径。
@@ -306,7 +306,7 @@ ClearLine 自有源码采用 `MIT OR Apache-2.0` 双许可，详见 `LICENSE-MIT
 
 1. 根据高质量模式实测结果继续调整后台推理队列容量、迟到帧补偿策略和状态页诊断阈值。
 2. 完善安装包脚本，把 DeepFilterNet 模型资源和 exe 一起发布到 `models/deepfilternet`。
-3. 实测麦克风增强在安静、正常说话和大声说话下的听感，必要时调整目标 RMS、最大增益和 limiter ceiling。
+3. 实测麦克风增强在安静、正常说话和大声说话下的听感，必要时调整固定输出增益和 limiter ceiling。
 4. 实测抗风噪增强的听感，并根据强风噪/喷麦样本微调高通截止频率、冲击阈值和 limiter 曲线。
 5. 根据延迟与缓冲诊断的实测结果，调整缓冲容量、预缓冲和高质量模式帧策略。
 6. 补充 44.1kHz 真实设备测试；当前没有对应设备，先保留为后续兼容性验证项。
