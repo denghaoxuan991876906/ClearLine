@@ -3,19 +3,13 @@ use crate::AudioFrameFormat;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoGainConfig {
     enabled: bool,
-    target_rms: f32,
-    silence_rms: f32,
-    max_gain: f32,
+    gain: f32,
     limiter_ceiling: f32,
-    peak_headroom: f32,
-    attack: f32,
-    release: f32,
 }
 
 #[derive(Debug, Clone)]
 pub struct AutoGainProcessor {
     config: AutoGainConfig,
-    current_gain: f32,
 }
 
 impl AutoGainConfig {
@@ -36,29 +30,29 @@ impl AutoGainConfig {
     pub fn is_enabled(self) -> bool {
         self.enabled
     }
+
+    pub fn gain(self) -> f32 {
+        self.gain
+    }
+
+    pub fn limiter_ceiling(self) -> f32 {
+        self.limiter_ceiling
+    }
 }
 
 impl Default for AutoGainConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            target_rms: 0.12,
-            silence_rms: 0.01,
-            max_gain: 2.5,
+            gain: 1.5,
             limiter_ceiling: 0.891,
-            peak_headroom: 0.96,
-            attack: 0.20,
-            release: 0.65,
         }
     }
 }
 
 impl AutoGainProcessor {
     pub fn new(_format: AudioFrameFormat, config: AutoGainConfig) -> Self {
-        Self {
-            config,
-            current_gain: 1.0,
-        }
+        Self { config }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -70,62 +64,13 @@ impl AutoGainProcessor {
             return;
         }
 
-        let rms = signal_rms(samples);
-        let peak = signal_peak(samples);
-        let ceiling = self.config.limiter_ceiling.clamp(0.1, 1.0);
-        let peak_ceiling = ceiling * self.config.peak_headroom.clamp(0.5, 1.0);
-        let loudness_gain = if rms < self.config.silence_rms {
-            1.0
-        } else {
-            (self.config.target_rms / rms).clamp(1.0, self.config.max_gain)
-        };
-        let peak_limited_gain = if peak > f32::EPSILON {
-            loudness_gain.min(peak_ceiling / peak)
-        } else {
-            loudness_gain
-        };
-        let target_gain = peak_limited_gain.clamp(0.0, self.config.max_gain);
-
-        if target_gain < self.current_gain {
-            let release = self.config.release.clamp(0.0, 1.0);
-            self.current_gain += (target_gain - self.current_gain) * release;
-            self.current_gain = self.current_gain.min(target_gain);
-        } else {
-            let attack = self.config.attack.clamp(0.0, 1.0);
-            self.current_gain += (target_gain - self.current_gain) * attack;
-        }
-
+        let gain = self.config.gain().max(0.0);
+        let ceiling = self.config.limiter_ceiling().clamp(0.1, 1.0);
         for sample in samples {
             let finite = if sample.is_finite() { *sample } else { 0.0 };
-            *sample = (finite * self.current_gain).clamp(-ceiling, ceiling);
+            *sample = (finite * gain).clamp(-ceiling, ceiling);
         }
     }
-}
-
-fn signal_peak(samples: &[f32]) -> f32 {
-    samples
-        .iter()
-        .map(|sample| {
-            if sample.is_finite() {
-                sample.abs()
-            } else {
-                0.0
-            }
-        })
-        .fold(0.0_f32, f32::max)
-}
-
-fn signal_rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-
-    let sum = samples
-        .iter()
-        .map(|sample| if sample.is_finite() { *sample } else { 0.0 })
-        .map(|sample| sample * sample)
-        .sum::<f32>();
-    (sum / samples.len() as f32).sqrt()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -259,48 +204,43 @@ mod tests {
     }
 
     #[test]
-    fn auto_gain_increases_quiet_voice_like_samples() {
+    fn auto_gain_applies_fixed_output_gain_to_processed_audio() {
         let format = AudioFrameFormat::new(48_000, 1);
         let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
-        let mut samples = vec![0.05; 480];
-        let before = rms_for_test(&samples);
+        let mut samples = vec![0.10_f32, -0.20, 0.30, -0.40];
 
         processor.process_interleaved(&mut samples);
 
-        assert!(rms_for_test(&samples) > before * 1.2);
+        assert_close(samples[0], 0.15);
+        assert_close(samples[1], -0.30);
+        assert_close(samples[2], 0.45);
+        assert_close(samples[3], -0.60);
     }
 
     #[test]
-    fn auto_gain_does_not_raise_near_silence() {
+    fn auto_gain_applies_fixed_output_gain_to_near_silence() {
         let format = AudioFrameFormat::new(48_000, 1);
         let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
-        let mut samples = vec![0.001; 480];
+        let mut samples = vec![0.001_f32, -0.002];
 
         processor.process_interleaved(&mut samples);
 
-        assert!(rms_for_test(&samples) < 0.002);
+        assert_close(samples[0], 0.0015);
+        assert_close(samples[1], -0.0030);
     }
 
     #[test]
-    fn auto_gain_preserves_transient_shape_when_peak_headroom_is_low() {
+    fn auto_gain_preserves_shape_below_limiter() {
         let format = AudioFrameFormat::new(48_000, 1);
         let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
         let mut samples = vec![0.04_f32; 480];
-        samples[120] = 0.80_f32;
+        samples[120] = 0.50_f32;
         let original_ratio = samples[120].abs() / samples[0].abs();
 
         processor.process_interleaved(&mut samples);
 
         let processed_ratio = samples[120].abs() / samples[0].abs().max(f32::EPSILON);
-        assert!(
-            processed_ratio > original_ratio * 0.95,
-            "transient ratio changed too much: original={original_ratio}, processed={processed_ratio}"
-        );
-        assert!(
-            samples[120].abs() < 0.86,
-            "transient should stay below limiter knee instead of being hard-clipped: {}",
-            samples[120]
-        );
+        assert_close(processed_ratio, original_ratio);
     }
 
     #[test]
@@ -327,9 +267,11 @@ mod tests {
         assert_eq!(samples, before);
     }
 
-    fn rms_for_test(samples: &[f32]) -> f32 {
-        let sum = samples.iter().map(|sample| sample * sample).sum::<f32>();
-        (sum / samples.len().max(1) as f32).sqrt()
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 0.000_01,
+            "expected {expected}, got {actual}"
+        );
     }
 
     #[test]
