@@ -134,44 +134,14 @@ fn resolve_input_device_from_settings(
 }
 
 fn resolve_output_device_from_settings(
-    saved_id: Option<&str>,
-    saved_name: Option<&str>,
+    _saved_id: Option<&str>,
+    _saved_name: Option<&str>,
     devices: &[AudioOutputDevice],
 ) -> Option<DeviceId> {
-    let device_refs = devices
+    devices
         .iter()
-        .map(|device| (device.id(), device.name(), device.is_default()))
-        .collect::<Vec<_>>();
-
-    if let Some(saved_id) = saved_id.filter(|value| !value.trim().is_empty()) {
-        if let Some(device) = device_refs
-            .iter()
-            .find(|device| device.0.as_str() == saved_id)
-        {
-            return Some(device.0.clone());
-        }
-    }
-
-    if let Some(saved_name) = saved_name.filter(|value| !value.trim().is_empty()) {
-        if let Some(device) = device_refs.iter().find(|device| device.1 == saved_name) {
-            return Some(device.0.clone());
-        }
-    }
-
-    if saved_id.is_none() && saved_name.is_none() {
-        if let Some(device) = device_refs
-            .iter()
-            .find(|device| is_vb_cable_render_device_name(device.1))
-        {
-            return Some(device.0.clone());
-        }
-    }
-
-    device_refs
-        .iter()
-        .find(|device| device.2)
-        .or_else(|| device_refs.first())
-        .map(|device| device.0.clone())
+        .find(|device| is_vb_cable_render_device_name(device.name()))
+        .map(|device| device.id().clone())
 }
 
 fn resolve_device_id_from_settings<'a>(
@@ -331,16 +301,17 @@ impl ClearLineApp {
     }
 
     fn ensure_selected_output_device(&mut self) {
-        let current_is_valid = self
+        let current_is_valid_vb_cable = self
             .selected_output_device_id
             .as_ref()
-            .is_some_and(|selected| {
+            .and_then(|selected| {
                 self.output_devices
                     .iter()
-                    .any(|device| device.id() == selected)
-            });
+                    .find(|device| device.id() == selected)
+            })
+            .is_some_and(|device| is_vb_cable_render_device_name(device.name()));
 
-        if current_is_valid {
+        if current_is_valid_vb_cable {
             return;
         }
 
@@ -348,12 +319,6 @@ impl ClearLineApp {
             .output_devices
             .iter()
             .find(|device| is_vb_cable_render_device_name(device.name()))
-            .or_else(|| {
-                self.output_devices
-                    .iter()
-                    .find(|device| device.is_default())
-            })
-            .or_else(|| self.output_devices.first())
             .map(|device| device.id().clone());
     }
 
@@ -563,14 +528,18 @@ impl ClearLineApp {
             self.status_message = "启动前请先选择麦克风".to_owned();
             return;
         };
-        let Some(output_device_id) = self.selected_output_device_id.clone() else {
+        let Some(output_device) = self
+            .selected_output_device()
+            .filter(|device| is_vb_cable_render_device_name(device.name()))
+        else {
             self.pipeline.fail("未找到 VB-CABLE 输出端点");
             self.status_message =
                 "未找到 VB-CABLE 输出端点（CABLE Input 或 CABLE In 16 Ch）。请先安装 VB-CABLE，或重新运行 ClearLine 安装器。".to_owned();
             return;
         };
+        let output_device_id = output_device.id().clone();
+        let output_label = output_device.name().to_owned();
         let mode = self.effective_suppressor_mode();
-        let output_label = vb_cable_render_device_name();
         let model_status = packaged_deepfilter_model_status();
         let mut config = AudioPipelineConfig::new(device_id, output_device_id, mode)
             .with_suppression_strength(self.suppression_strength)
@@ -1781,10 +1750,6 @@ fn output_device_label(device: &AudioOutputDevice) -> String {
     }
 }
 
-fn vb_cable_render_device_name() -> &'static str {
-    "VB-CABLE"
-}
-
 fn is_vb_cable_render_device_name(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
     (normalized.contains("cable input") || normalized.contains("cable in"))
@@ -1951,34 +1916,31 @@ mod tests {
     }
 
     #[test]
-    fn restore_output_device_prefers_id_then_name_then_default() {
+    fn restore_output_device_ignores_non_cable_saved_device_when_vb_cable_exists() {
         let devices = vec![
             AudioOutputDevice::new("default-out", "Default Speaker", true),
             AudioOutputDevice::new("saved-out", "Saved Output", false),
-            AudioOutputDevice::new("name-out", "Name Output", false),
+            AudioOutputDevice::new("cable-out", "CABLE Input", false),
         ];
 
         assert_eq!(
-            resolve_output_device_from_settings(Some("saved-out"), Some("Name Output"), &devices)
+            resolve_output_device_from_settings(Some("saved-out"), Some("Saved Output"), &devices)
                 .unwrap()
                 .as_str(),
-            "saved-out"
+            "cable-out"
         );
+    }
+
+    #[test]
+    fn restore_output_device_returns_none_when_vb_cable_is_missing() {
+        let devices = vec![
+            AudioOutputDevice::new("default-out", "Default Speaker", true),
+            AudioOutputDevice::new("saved-out", "Saved Output", false),
+        ];
+
         assert_eq!(
-            resolve_output_device_from_settings(Some("missing-out"), Some("Name Output"), &devices)
-                .unwrap()
-                .as_str(),
-            "name-out"
-        );
-        assert_eq!(
-            resolve_output_device_from_settings(
-                Some("missing-out"),
-                Some("Missing Output"),
-                &devices
-            )
-            .unwrap()
-            .as_str(),
-            "default-out"
+            resolve_output_device_from_settings(Some("saved-out"), Some("Saved Output"), &devices),
+            None
         );
     }
 
@@ -2027,6 +1989,41 @@ mod tests {
             app.selected_output_device_id.as_ref().unwrap().as_str(),
             "cable-out"
         );
+    }
+
+    #[test]
+    fn output_selection_replaces_existing_non_cable_device_with_vb_cable() {
+        let mut app = ClearLineApp::new_without_loading_settings_for_tests();
+        app.output_devices = vec![
+            AudioOutputDevice::new("default-out", "Default Speakers", true),
+            AudioOutputDevice::new(
+                "cable-out",
+                "CABLE In 16 Ch (VB-Audio Virtual Cable)",
+                false,
+            ),
+        ];
+        app.selected_output_device_id = Some(DeviceId::new("default-out"));
+
+        app.ensure_selected_output_device();
+
+        assert_eq!(
+            app.selected_output_device_id.as_ref().unwrap().as_str(),
+            "cable-out"
+        );
+    }
+
+    #[test]
+    fn output_selection_is_empty_when_vb_cable_is_missing() {
+        let mut app = ClearLineApp::new_without_loading_settings_for_tests();
+        app.output_devices = vec![AudioOutputDevice::new(
+            "default-out",
+            "Default Speakers",
+            true,
+        )];
+
+        app.ensure_selected_output_device();
+
+        assert_eq!(app.selected_output_device_id, None);
     }
 
     #[test]
@@ -2218,6 +2215,7 @@ mod tests {
         app.output_devices = vec![
             AudioOutputDevice::new("default-out", "Default Output", true),
             AudioOutputDevice::new("saved-out", "Saved Output", false),
+            AudioOutputDevice::new("cable-out", "CABLE Input", false),
         ];
         app.pending_settings = Some(PersistedSettings {
             input_device_id: Some("saved-mic".to_owned()),
@@ -2240,7 +2238,7 @@ mod tests {
         );
         assert_eq!(
             app.selected_output_device_id.as_ref().unwrap().as_str(),
-            "saved-out"
+            "cable-out"
         );
         assert_eq!(app.suppressor_mode.value(), SuppressorMode::HighQuality);
         assert_eq!(
@@ -2487,6 +2485,21 @@ mod tests {
         assert!(source.contains(&expected_config_builder));
         assert!(!source.contains(&legacy_virtual_builder));
         assert!(!source.contains(&legacy_device_name));
+    }
+
+    #[test]
+    fn app_start_rejects_non_vb_cable_output_even_if_selected_id_exists() {
+        let mut app = ClearLineApp::new_without_loading_settings_for_tests();
+        app.devices = vec![AudioInputDevice::new("mic-id", "Mic", true)];
+        app.output_devices = vec![AudioOutputDevice::new("speaker-id", "Speakers", true)];
+        app.selected_device_id = Some(DeviceId::new("mic-id"));
+        app.selected_output_device_id = Some(DeviceId::new("speaker-id"));
+        app.noise_suppression_enabled = false;
+
+        app.start_pipeline();
+
+        assert!(matches!(app.pipeline.state(), PipelineState::Error(_)));
+        assert!(app.status_message.contains("未找到 VB-CABLE 输出端点"));
     }
 
     #[test]

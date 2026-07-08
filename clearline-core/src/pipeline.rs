@@ -374,10 +374,18 @@ impl AudioStreamFormat {
 
 #[cfg(any(windows, test))]
 fn passthrough_output_format(
-    input: AudioStreamFormat,
+    _input: AudioStreamFormat,
     output_default: AudioStreamFormat,
 ) -> AudioStreamFormat {
-    AudioStreamFormat::new(input.sample_rate_hz, output_default.channels)
+    output_default
+}
+
+#[cfg(any(windows, test))]
+fn audio_device_processing_format(
+    input: AudioStreamFormat,
+    output: AudioStreamFormat,
+) -> AudioFrameFormat {
+    AudioFrameFormat::new(output.sample_rate_hz, input.channels)
 }
 
 #[cfg(any(windows, test))]
@@ -495,6 +503,7 @@ impl InputCallbackScratch {
             .extend(samples.iter().map(|sample| sample.to_sample::<f32>()));
     }
 
+    #[cfg(test)]
     fn copy_input_to_processing(&mut self) {
         self.processing_input.clear();
         self.processing_input.extend_from_slice(&self.input);
@@ -939,25 +948,29 @@ impl AudioPipeline {
                     startup_prebuffer_samples(&output_stream_config),
                 );
                 let meter = self.level_meter.clone();
-                let input_frame_format = AudioFrameFormat::new(
+                let real_input_frame_format = AudioFrameFormat::new(
                     input_stream_format.sample_rate_hz,
                     input_stream_format.channels,
                 );
+                let processing_frame_format =
+                    audio_device_processing_format(input_stream_format, output_stream_format);
                 let suppressor = try_create_suppressor_with_deepfilternet_bundle(
                     config.suppressor_mode(),
-                    input_frame_format,
+                    processing_frame_format,
                     config.suppression_strength(),
                     config.deepfilternet_model_bundle().cloned(),
                 )?;
-                let echo_canceller =
-                    create_echo_canceller(config.echo_cancellation_enabled(), input_frame_format)?;
+                let echo_canceller = create_echo_canceller(
+                    config.echo_cancellation_enabled(),
+                    processing_frame_format,
+                )?;
                 let echo_cancellation = echo_canceller.runtime_info();
                 let reference_capture = start_reference_capture_for_echo(echo_cancellation)?;
                 let reference_buffer = reference_capture
                     .as_ref()
                     .map(LoopbackReferenceCapture::shared_buffer);
                 let runtime_info = PipelineRuntimeInfo::new(
-                    input_frame_format,
+                    real_input_frame_format,
                     AudioFrameFormat::new(
                         output_stream_format.sample_rate_hz,
                         output_stream_format.channels,
@@ -968,13 +981,19 @@ impl AudioPipeline {
                 .with_echo_cancellation(echo_cancellation)
                 .with_wind_noise_reduction(config.wind_noise_reduction_enabled());
                 let wind_noise_reducer = WindNoiseReducer::new(
-                    input_frame_format,
+                    processing_frame_format,
                     if config.wind_noise_reduction_enabled() {
                         WindNoiseConfig::enabled()
                     } else {
                         WindNoiseConfig::default()
                     },
                 );
+
+                let sample_rate_converter = StreamingSampleRateConverter::new(
+                    input_stream_format.sample_rate_hz,
+                    output_stream_format.sample_rate_hz,
+                    input_stream_format.channels,
+                )?;
 
                 let input_stream = match input_sample_format {
                     SampleFormat::I8 => build_input_passthrough_stream::<i8>(
@@ -986,6 +1005,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -998,6 +1018,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1010,6 +1031,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1022,6 +1044,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1034,6 +1057,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1046,6 +1070,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1058,6 +1083,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1070,6 +1096,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1082,6 +1109,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1094,6 +1122,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                         output_stream_format.channels,
                     ),
@@ -1506,6 +1535,7 @@ fn build_input_passthrough_stream<T>(
     mut echo_canceller: Box<dyn EchoCanceller + Send>,
     mut reference_buffer: Option<SharedReferenceFrameBuffer>,
     mut wind_noise_reducer: WindNoiseReducer,
+    mut sample_rate_converter: StreamingSampleRateConverter,
     input_channels: u16,
     output_channels: u16,
 ) -> ClearLineResult<cpal::Stream>
@@ -1522,7 +1552,14 @@ where
                 scratch.copy_from_samples(data);
 
                 meter.update_from_f32_samples(&scratch.input);
-                scratch.copy_input_to_processing();
+                match scratch.resample_input_to_processing(&mut sample_rate_converter) {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        eprintln!("ClearLine input resampling error: {error}");
+                        return;
+                    }
+                }
                 let reference_source = reference_buffer
                     .as_mut()
                     .map(|buffer| buffer as &mut dyn ReferenceFrameSource);
@@ -2076,13 +2113,23 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_output_format_uses_input_sample_rate() {
+    fn audio_device_output_format_keeps_output_default_sample_rate() {
         let input = AudioStreamFormat::new(44_100, 1);
         let output_default = AudioStreamFormat::new(48_000, 2);
 
         let output = passthrough_output_format(input, output_default);
 
-        assert_eq!(output, AudioStreamFormat::new(44_100, 2));
+        assert_eq!(output, AudioStreamFormat::new(48_000, 2));
+    }
+
+    #[test]
+    fn audio_device_processing_format_uses_output_rate_and_input_channels() {
+        let input = AudioStreamFormat::new(44_100, 2);
+        let output = AudioStreamFormat::new(48_000, 16);
+
+        let processing = audio_device_processing_format(input, output);
+
+        assert_eq!(processing, AudioFrameFormat::new(48_000, 2));
     }
 
     #[test]
