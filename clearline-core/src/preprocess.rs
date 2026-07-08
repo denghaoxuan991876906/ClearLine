@@ -44,7 +44,7 @@ impl Default for AutoGainConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            gain: 1.5,
+            gain: 2.0,
             limiter_ceiling: 0.891,
         }
     }
@@ -211,10 +211,10 @@ mod tests {
 
         processor.process_interleaved(&mut samples);
 
-        assert_close(samples[0], 0.15);
-        assert_close(samples[1], -0.30);
-        assert_close(samples[2], 0.45);
-        assert_close(samples[3], -0.60);
+        assert_close(samples[0], 0.20);
+        assert_close(samples[1], -0.40);
+        assert_close(samples[2], 0.60);
+        assert_close(samples[3], -0.80);
     }
 
     #[test]
@@ -225,8 +225,8 @@ mod tests {
 
         processor.process_interleaved(&mut samples);
 
-        assert_close(samples[0], 0.0015);
-        assert_close(samples[1], -0.0030);
+        assert_close(samples[0], 0.0020);
+        assert_close(samples[1], -0.0040);
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         let format = AudioFrameFormat::new(48_000, 1);
         let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
         let mut samples = vec![0.04_f32; 480];
-        samples[120] = 0.50_f32;
+        samples[120] = 0.40_f32;
         let original_ratio = samples[120].abs() / samples[0].abs();
 
         processor.process_interleaved(&mut samples);
