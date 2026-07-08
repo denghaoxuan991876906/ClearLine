@@ -22,6 +22,8 @@ use crate::reference::ReferenceCaptureStats;
 use crate::reference::ReferenceFrameBuffer;
 #[cfg(windows)]
 use crate::reference::{LoopbackReferenceCapture, SharedReferenceFrameBuffer};
+#[cfg(any(windows, test))]
+use crate::resample::StreamingSampleRateConverter;
 #[cfg(windows)]
 use crate::suppressor::try_create_suppressor_with_deepfilternet_bundle;
 #[cfg(any(windows, test))]
@@ -428,6 +430,14 @@ fn clearline_virtual_microphone_output_format(
 }
 
 #[cfg(any(windows, test))]
+fn virtual_microphone_processing_format(
+    input: AudioStreamFormat,
+    output: AudioStreamFormat,
+) -> AudioFrameFormat {
+    AudioFrameFormat::new(output.sample_rate_hz, input.channels)
+}
+
+#[cfg(any(windows, test))]
 fn append_virtual_microphone_pcm_i16(input: &[f32], input_channels: u16, output: &mut Vec<i16>) {
     let input_channels = usize::from(input_channels.max(1));
     output.reserve(input.len() / input_channels);
@@ -456,6 +466,7 @@ fn f32_to_i16_pcm(sample: f32) -> i16 {
 #[derive(Debug, Default)]
 struct InputCallbackScratch {
     input: Vec<f32>,
+    processing_input: Vec<f32>,
     echo_cancelled: Vec<f32>,
     render_reference: Vec<f32>,
     reference_mono: Vec<f32>,
@@ -484,15 +495,31 @@ impl InputCallbackScratch {
             .extend(samples.iter().map(|sample| sample.to_sample::<f32>()));
     }
 
+    fn copy_input_to_processing(&mut self) {
+        self.processing_input.clear();
+        self.processing_input.extend_from_slice(&self.input);
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn resample_input_to_processing(
+        &mut self,
+        converter: &mut StreamingSampleRateConverter,
+    ) -> ClearLineResult<bool> {
+        self.processing_input.clear();
+        converter.process_interleaved(&self.input, &mut self.processing_input)?;
+        Ok(!self.processing_input.is_empty())
+    }
+
     fn prepare_processed_buffer(&mut self) {
-        self.echo_cancelled.resize(self.input.len(), 0.0);
-        self.processed.resize(self.input.len(), 0.0);
+        self.echo_cancelled.resize(self.processing_input.len(), 0.0);
+        self.processed.resize(self.processing_input.len(), 0.0);
     }
 
     #[cfg(test)]
-    fn capacities(&self) -> (usize, usize, usize) {
+    fn capacities(&self) -> (usize, usize, usize, usize) {
         (
             self.input.capacity(),
+            self.processing_input.capacity(),
             self.processed.capacity(),
             self.converted.capacity(),
         )
@@ -532,7 +559,7 @@ fn process_input_callback_frame(
         echo_canceller,
         reference_buffer,
         input_channels,
-        &scratch.input,
+        &scratch.processing_input,
         &mut scratch.echo_cancelled,
         &mut scratch.render_reference,
         &mut scratch.reference_mono,
@@ -1151,33 +1178,30 @@ impl AudioPipeline {
                     ping.sample_rate_hz(),
                     ping.channels(),
                 )?;
-                if input_stream_format.sample_rate_hz != output_stream_format.sample_rate_hz {
-                    return Err(ClearLineError::StreamBuild(format!(
-                        "ClearLine Virtual Microphone output currently requires a 48000 Hz input stream; selected input uses {} Hz",
-                        input_stream_format.sample_rate_hz
-                    )));
-                }
-
                 let meter = self.level_meter.clone();
-                let input_frame_format = AudioFrameFormat::new(
+                let real_input_frame_format = AudioFrameFormat::new(
                     input_stream_format.sample_rate_hz,
                     input_stream_format.channels,
                 );
+                let processing_frame_format =
+                    virtual_microphone_processing_format(input_stream_format, output_stream_format);
                 let suppressor = try_create_suppressor_with_deepfilternet_bundle(
                     config.suppressor_mode(),
-                    input_frame_format,
+                    processing_frame_format,
                     config.suppression_strength(),
                     config.deepfilternet_model_bundle().cloned(),
                 )?;
-                let echo_canceller =
-                    create_echo_canceller(config.echo_cancellation_enabled(), input_frame_format)?;
+                let echo_canceller = create_echo_canceller(
+                    config.echo_cancellation_enabled(),
+                    processing_frame_format,
+                )?;
                 let echo_cancellation = echo_canceller.runtime_info();
                 let reference_capture = start_reference_capture_for_echo(echo_cancellation)?;
                 let reference_buffer = reference_capture
                     .as_ref()
                     .map(LoopbackReferenceCapture::shared_buffer);
                 let runtime_info = PipelineRuntimeInfo::new(
-                    input_frame_format,
+                    real_input_frame_format,
                     AudioFrameFormat::new(
                         output_stream_format.sample_rate_hz,
                         output_stream_format.channels,
@@ -1188,13 +1212,19 @@ impl AudioPipeline {
                 .with_echo_cancellation(echo_cancellation)
                 .with_wind_noise_reduction(config.wind_noise_reduction_enabled());
                 let wind_noise_reducer = WindNoiseReducer::new(
-                    input_frame_format,
+                    processing_frame_format,
                     if config.wind_noise_reduction_enabled() {
                         WindNoiseConfig::enabled()
                     } else {
                         WindNoiseConfig::default()
                     },
                 );
+
+                let sample_rate_converter = StreamingSampleRateConverter::new(
+                    input_stream_format.sample_rate_hz,
+                    output_stream_format.sample_rate_hz,
+                    input_stream_format.channels,
+                )?;
 
                 let input_stream = match input_sample_format {
                     SampleFormat::I8 => build_input_virtual_microphone_stream::<i8>(
@@ -1206,6 +1236,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::I16 => build_input_virtual_microphone_stream::<i16>(
@@ -1217,6 +1248,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::I32 => build_input_virtual_microphone_stream::<i32>(
@@ -1228,6 +1260,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::I64 => build_input_virtual_microphone_stream::<i64>(
@@ -1239,6 +1272,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::U8 => build_input_virtual_microphone_stream::<u8>(
@@ -1250,6 +1284,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::U16 => build_input_virtual_microphone_stream::<u16>(
@@ -1261,6 +1296,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::U32 => build_input_virtual_microphone_stream::<u32>(
@@ -1272,6 +1308,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::U64 => build_input_virtual_microphone_stream::<u64>(
@@ -1283,6 +1320,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::F32 => build_input_virtual_microphone_stream::<f32>(
@@ -1294,6 +1332,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     SampleFormat::F64 => build_input_virtual_microphone_stream::<f64>(
@@ -1305,6 +1344,7 @@ impl AudioPipeline {
                         echo_canceller,
                         reference_buffer,
                         wind_noise_reducer,
+                        sample_rate_converter,
                         input_stream_format.channels,
                     ),
                     unsupported => Err(ClearLineError::UnsupportedSampleFormat(format!(
@@ -1478,6 +1518,7 @@ where
                 scratch.copy_from_samples(data);
 
                 meter.update_from_f32_samples(&scratch.input);
+                scratch.copy_input_to_processing();
                 let reference_source = reference_buffer
                     .as_mut()
                     .map(|buffer| buffer as &mut dyn ReferenceFrameSource);
@@ -1520,6 +1561,7 @@ fn build_input_virtual_microphone_stream<T>(
     mut echo_canceller: Box<dyn EchoCanceller + Send>,
     mut reference_buffer: Option<SharedReferenceFrameBuffer>,
     mut wind_noise_reducer: WindNoiseReducer,
+    mut sample_rate_converter: StreamingSampleRateConverter,
     input_channels: u16,
 ) -> ClearLineResult<cpal::Stream>
 where
@@ -1535,6 +1577,14 @@ where
                 scratch.copy_from_samples(data);
 
                 meter.update_from_f32_samples(&scratch.input);
+                match scratch.resample_input_to_processing(&mut sample_rate_converter) {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        eprintln!("ClearLine input resampling error: {error}");
+                        return;
+                    }
+                }
                 let reference_source = reference_buffer
                     .as_mut()
                     .map(|buffer| buffer as &mut dyn ReferenceFrameSource);
@@ -1607,6 +1657,7 @@ mod tests {
     use crate::echo::{EchoCanceller, EchoCancellerBackend, EchoCancellerRuntimeInfo};
     use crate::preprocess::{WindNoiseConfig, WindNoiseReducer};
     use crate::reference::ReferenceFrameBuffer;
+    #[cfg(any(windows, test))]
     use crate::suppressor::{
         AudioFrameFormat, BypassSuppressor, DeepFilterNetModelBundle, SuppressionStrength,
         SuppressorMode, SuppressorRuntimeInfo,
@@ -2049,6 +2100,28 @@ mod tests {
     }
 
     #[test]
+    fn virtual_microphone_pipeline_no_longer_rejects_non_48k_input_in_source() {
+        let source = include_str!("pipeline.rs");
+
+        let old_error = ["requires", " a 48000 Hz input stream"].concat();
+
+        assert!(
+            !source.contains(&old_error),
+            "virtual microphone path should resample non-48k input instead of rejecting it"
+        );
+    }
+
+    #[test]
+    fn virtual_microphone_processing_format_uses_output_rate_and_input_channels() {
+        let input = AudioStreamFormat::new(44_100, 2);
+        let output = AudioStreamFormat::new(48_000, 1);
+
+        let processing = virtual_microphone_processing_format(input, output);
+
+        assert_eq!(processing, AudioFrameFormat::new(48_000, 2));
+    }
+
+    #[test]
     fn virtual_microphone_pcm_conversion_mixes_stereo_to_mono_i16() {
         let mut output = Vec::new();
 
@@ -2124,6 +2197,7 @@ mod tests {
         let mut scratch = InputCallbackScratch::default();
 
         scratch.copy_from_f32_samples(&[1.0, 0.75]);
+        scratch.copy_input_to_processing();
         process_input_callback_frame(
             &mut scratch,
             &mut echo,
@@ -2154,12 +2228,14 @@ mod tests {
         let mut scratch = InputCallbackScratch::default();
 
         scratch.copy_from_f32_samples(&[0.1, 0.2, 0.3, 0.4]);
+        scratch.copy_input_to_processing();
         scratch.prepare_processed_buffer();
         scratch.converted.clear();
         append_converted_channels(&scratch.processed, 1, 2, &mut scratch.converted);
         let capacities = scratch.capacities();
 
         scratch.copy_from_f32_samples(&[0.5, 0.6, 0.7, 0.8]);
+        scratch.copy_input_to_processing();
         scratch.prepare_processed_buffer();
         scratch.converted.clear();
         append_converted_channels(&scratch.processed, 1, 2, &mut scratch.converted);
@@ -2167,6 +2243,7 @@ mod tests {
         assert_eq!(scratch.capacities(), capacities);
 
         scratch.copy_from_f32_samples(&[0.9, 1.0]);
+        scratch.copy_input_to_processing();
         scratch.prepare_processed_buffer();
         scratch.converted.clear();
         append_converted_channels(&scratch.processed, 1, 2, &mut scratch.converted);
