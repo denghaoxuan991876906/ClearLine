@@ -1,6 +1,109 @@
 use crate::AudioFrameFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoGainConfig {
+    enabled: bool,
+    target_rms: f32,
+    silence_rms: f32,
+    max_gain: f32,
+    limiter_ceiling: f32,
+    attack: f32,
+    release: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoGainProcessor {
+    config: AutoGainConfig,
+    current_gain: f32,
+}
+
+impl AutoGainConfig {
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self.enabled
+    }
+}
+
+impl Default for AutoGainConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_rms: 0.18,
+            silence_rms: 0.01,
+            max_gain: 4.0,
+            limiter_ceiling: 0.891,
+            attack: 0.20,
+            release: 0.65,
+        }
+    }
+}
+
+impl AutoGainProcessor {
+    pub fn new(_format: AudioFrameFormat, config: AutoGainConfig) -> Self {
+        Self {
+            config,
+            current_gain: 1.0,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.config.is_enabled()
+    }
+
+    pub fn process_interleaved(&mut self, samples: &mut [f32]) {
+        if !self.config.is_enabled() || samples.is_empty() {
+            return;
+        }
+
+        let rms = signal_rms(samples);
+        let target_gain = if rms < self.config.silence_rms {
+            1.0
+        } else {
+            (self.config.target_rms / rms).clamp(1.0, self.config.max_gain)
+        };
+
+        let smoothing = if target_gain > self.current_gain {
+            self.config.attack
+        } else {
+            self.config.release
+        };
+        self.current_gain += (target_gain - self.current_gain) * smoothing.clamp(0.0, 1.0);
+
+        let ceiling = self.config.limiter_ceiling.clamp(0.1, 1.0);
+        for sample in samples {
+            let finite = if sample.is_finite() { *sample } else { 0.0 };
+            *sample = (finite * self.current_gain).clamp(-ceiling, ceiling);
+        }
+    }
+}
+
+fn signal_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+
+    let sum = samples
+        .iter()
+        .map(|sample| if sample.is_finite() { *sample } else { 0.0 })
+        .map(|sample| sample * sample)
+        .sum::<f32>();
+    (sum / samples.len() as f32).sqrt()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindNoiseConfig {
     enabled: bool,
     high_pass_cutoff_hz: f32,
@@ -123,6 +226,64 @@ fn soft_limit(sample: f32, ceiling: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_gain_is_enabled_by_default_config_helper() {
+        assert!(AutoGainConfig::enabled().is_enabled());
+        assert!(!AutoGainConfig::disabled().is_enabled());
+    }
+
+    #[test]
+    fn auto_gain_increases_quiet_voice_like_samples() {
+        let format = AudioFrameFormat::new(48_000, 1);
+        let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
+        let mut samples = vec![0.05; 480];
+        let before = rms_for_test(&samples);
+
+        processor.process_interleaved(&mut samples);
+
+        assert!(rms_for_test(&samples) > before * 1.2);
+    }
+
+    #[test]
+    fn auto_gain_does_not_raise_near_silence() {
+        let format = AudioFrameFormat::new(48_000, 1);
+        let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
+        let mut samples = vec![0.001; 480];
+
+        processor.process_interleaved(&mut samples);
+
+        assert!(rms_for_test(&samples) < 0.002);
+    }
+
+    #[test]
+    fn auto_gain_limiter_keeps_output_below_ceiling() {
+        let format = AudioFrameFormat::new(48_000, 1);
+        let mut processor = AutoGainProcessor::new(format, AutoGainConfig::enabled());
+        let mut samples = vec![2.0; 480];
+
+        processor.process_interleaved(&mut samples);
+
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        assert!(samples.iter().all(|sample| sample.abs() <= 0.8911));
+    }
+
+    #[test]
+    fn auto_gain_disabled_passes_samples_through() {
+        let format = AudioFrameFormat::new(48_000, 1);
+        let mut processor = AutoGainProcessor::new(format, AutoGainConfig::disabled());
+        let mut samples = vec![0.05, -0.1, 0.2, -0.3];
+        let before = samples.clone();
+
+        processor.process_interleaved(&mut samples);
+
+        assert_eq!(samples, before);
+    }
+
+    fn rms_for_test(samples: &[f32]) -> f32 {
+        let sum = samples.iter().map(|sample| sample * sample).sum::<f32>();
+        (sum / samples.len().max(1) as f32).sqrt()
+    }
 
     #[test]
     fn config_is_disabled_by_default() {
