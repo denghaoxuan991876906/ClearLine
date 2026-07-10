@@ -26,11 +26,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install NSIS
-        shell: powershell
+        shell: pwsh
         run: choco install nsis --yes --no-progress
 
       - name: Download verified build payloads
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -62,15 +62,15 @@ jobs:
           }
 
       - name: Run tests
-        shell: powershell
+        shell: pwsh
         run: |
           cargo test -p clearline-app --no-default-features
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-installer-layout.ps1
+          pwsh -NoProfile -File .\tests\test-installer-layout.ps1
 
       - name: Build NSIS installer
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\clearline-installer\scripts\build-installer.ps1
+        shell: pwsh
+        run: pwsh -NoProfile -File .\clearline-installer\scripts\build-installer.ps1
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
