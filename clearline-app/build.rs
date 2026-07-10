@@ -1,8 +1,16 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=assets/clearline.ico");
     println!("cargo:rerun-if-changed=../.git/HEAD");
     println!("cargo:rerun-if-changed=../.git/index");
+
+    if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        winresource::WindowsResource::new()
+            .set_icon("assets/clearline.ico")
+            .compile()
+            .expect("embed ClearLine application icon");
+    }
 
     let commit = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])

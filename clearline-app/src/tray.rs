@@ -30,6 +30,7 @@ mod platform {
     const MENU_TOGGLE_WIND: u32 = 1004;
     const MENU_TOGGLE_ECHO: u32 = 1005;
     const MENU_EXIT: u32 = 1099;
+    const APP_ICON_RESOURCE_ID: usize = 1;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum TrayEvent {
@@ -330,7 +331,11 @@ mod platform {
         let mut data = tray_icon_data(hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_CLEARLINE_TRAY;
-        data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        let instance = GetModuleHandleW(std::ptr::null());
+        data.hIcon = LoadIconW(instance, APP_ICON_RESOURCE_ID as *const u16);
+        if data.hIcon.is_null() {
+            data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        }
         write_wide_fixed(&mut data.szTip, "ClearLine");
         Shell_NotifyIconW(NIM_ADD, &data) != 0
     }
