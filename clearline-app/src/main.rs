@@ -2,6 +2,7 @@
 
 mod settings;
 mod tray;
+mod update;
 mod windows_settings;
 
 use std::{
@@ -38,6 +39,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(initial_window_size())
             .with_min_inner_size(minimum_window_size())
+            .with_icon(app_icon())
             .with_visible(!start_minimized),
         ..Default::default()
     };
@@ -51,6 +53,11 @@ fn main() -> eframe::Result {
             Ok(Box::new(ClearLineApp::new(&cc.egui_ctx)))
         }),
     )
+}
+
+fn app_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/clearline-icon-256.png"))
+        .expect("embedded ClearLine window icon must be a valid PNG")
 }
 
 fn start_minimized_from_args(args: impl IntoIterator<Item = String>) -> bool {
@@ -89,7 +96,23 @@ struct ClearLineApp {
     tray_events: Option<mpsc::Receiver<tray::TrayEvent>>,
     start_on_login_task: Option<mpsc::Receiver<(bool, Result<(), String>)>>,
     pending_start_on_login_enabled: Option<bool>,
+    update_sender: mpsc::Sender<update::UpdateEvent>,
+    update_events: mpsc::Receiver<update::UpdateEvent>,
+    update_state: UpdateUiState,
     exit_requested: bool,
+}
+
+#[derive(Debug)]
+enum UpdateUiState {
+    Idle,
+    Checking,
+    Available(update::UpdateManifest),
+    Downloading,
+    Ready {
+        manifest: update::UpdateManifest,
+        installer: PathBuf,
+    },
+    Error(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +274,7 @@ impl ClearLineApp {
         status_message: String,
         settings_loaded: bool,
     ) -> Self {
+        let (update_sender, update_events) = mpsc::channel();
         Self {
             enumerator: CpalDeviceEnumerator,
             devices: Vec::new(),
@@ -274,6 +298,9 @@ impl ClearLineApp {
             tray_events: None,
             start_on_login_task: None,
             pending_start_on_login_enabled: None,
+            update_sender,
+            update_events,
+            update_state: UpdateUiState::Idle,
             exit_requested: false,
         }
     }
@@ -623,10 +650,17 @@ impl eframe::App for ClearLineApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_tray_events(ui.ctx());
         self.poll_start_on_login_task();
+        self.poll_update_events();
         self.update_tray_menu_state();
         self.handle_close_to_tray(ui.ctx());
         self.sync_pipeline_level();
-        if self.pipeline.state().is_running() || self.start_on_login_task.is_some() {
+        if self.pipeline.state().is_running()
+            || self.start_on_login_task.is_some()
+            || matches!(
+                self.update_state,
+                UpdateUiState::Checking | UpdateUiState::Downloading
+            )
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(33));
         }
 
@@ -733,6 +767,36 @@ impl ClearLineApp {
         }
     }
 
+    fn poll_update_events(&mut self) {
+        while let Ok(event) = self.update_events.try_recv() {
+            self.update_state = match event {
+                update::UpdateEvent::Checked(Some(manifest)) => UpdateUiState::Available(manifest),
+                update::UpdateEvent::Checked(None) => {
+                    self.status_message = "当前已是最新版本".to_owned();
+                    UpdateUiState::Idle
+                }
+                update::UpdateEvent::Downloaded {
+                    manifest,
+                    installer,
+                } => UpdateUiState::Ready {
+                    manifest,
+                    installer,
+                },
+                update::UpdateEvent::Failed(error) => UpdateUiState::Error(error),
+            };
+        }
+    }
+
+    fn begin_update_check(&mut self) {
+        self.update_state = UpdateUiState::Checking;
+        update::check(env!("CARGO_PKG_VERSION"), self.update_sender.clone());
+    }
+
+    fn begin_update_download(&mut self, manifest: update::UpdateManifest) {
+        self.update_state = UpdateUiState::Downloading;
+        update::download(manifest, self.update_sender.clone());
+    }
+
     fn handle_close_to_tray(&mut self, ctx: &egui::Context) {
         if self.exit_requested {
             return;
@@ -769,7 +833,7 @@ impl ClearLineApp {
         });
     }
 
-    fn status_tab(&self, ui: &mut egui::Ui) {
+    fn status_tab(&mut self, ui: &mut egui::Ui) {
         ui.columns(2, |columns| {
             columns[0].vertical(|ui| {
                 self.level_card(ui);
@@ -781,6 +845,8 @@ impl ClearLineApp {
                 self.buffer_card(ui);
                 ui.add_space(12.0);
                 self.status_card(ui);
+                ui.add_space(12.0);
+                self.update_card(ui);
             });
         });
     }
@@ -1178,6 +1244,80 @@ impl ClearLineApp {
                     );
                 });
             });
+    }
+
+    fn update_card(&mut self, ui: &mut egui::Ui) {
+        enum Action {
+            Check,
+            Download(update::UpdateManifest),
+            Install(PathBuf),
+        }
+
+        let mut action = None;
+        card_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            section_title(ui, "软件更新", "通过 GitHub Releases 获取正式版本");
+            ui.add_space(8.0);
+
+            match &self.update_state {
+                UpdateUiState::Idle => {
+                    ui.label(RichText::new("当前版本已就绪").color(ios_secondary_text()));
+                    ui.add_space(8.0);
+                    if ui.button("检查更新").clicked() {
+                        action = Some(Action::Check);
+                    }
+                }
+                UpdateUiState::Checking => {
+                    ui.spinner();
+                    ui.label("正在检查更新...");
+                }
+                UpdateUiState::Available(manifest) => {
+                    ui.label(
+                        RichText::new(format!("发现新版本 {}", manifest.version))
+                            .strong()
+                            .color(ios_text()),
+                    );
+                    for note in &manifest.notes {
+                        ui.label(RichText::new(format!("- {note}")).color(ios_secondary_text()));
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("下载更新").clicked() {
+                        action = Some(Action::Download(manifest.clone()));
+                    }
+                }
+                UpdateUiState::Downloading => {
+                    ui.spinner();
+                    ui.label("正在下载并校验安装包...");
+                }
+                UpdateUiState::Ready {
+                    manifest,
+                    installer,
+                } => {
+                    ui.label(format!("版本 {} 已准备完成", manifest.version));
+                    ui.add_space(8.0);
+                    if ui.button("退出并安装").clicked() {
+                        action = Some(Action::Install(installer.clone()));
+                    }
+                }
+                UpdateUiState::Error(error) => {
+                    ui.label(RichText::new(format!("更新失败：{error}")).color(Color32::RED));
+                    ui.add_space(8.0);
+                    if ui.button("重试").clicked() {
+                        action = Some(Action::Check);
+                    }
+                }
+            }
+        });
+
+        match action {
+            Some(Action::Check) => self.begin_update_check(),
+            Some(Action::Download(manifest)) => self.begin_update_download(manifest),
+            Some(Action::Install(installer)) => match update::launch_installer(&installer) {
+                Ok(()) => self.request_exit(ui.ctx()),
+                Err(error) => self.update_state = UpdateUiState::Error(error.to_string()),
+            },
+            None => {}
+        }
     }
 }
 

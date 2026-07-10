@@ -41,6 +41,7 @@ $InstallerRoot = Join-Path $RepoRoot "clearline-installer"
 $HelperRoot = Join-Path $RepoRoot "clearline-installer-helper"
 $SetupRoot = Join-Path $RepoRoot "clearline-setup"
 $LegacyIssPath = Join-Path $InstallerRoot "ClearLine.iss"
+$NsisScript = Join-Path $InstallerRoot "ClearLine.nsi"
 $BuildScript = Join-Path $InstallerRoot "scripts\build-installer.ps1"
 $ArtifactVerifier = Join-Path $InstallerRoot "scripts\verify-installer-artifact.ps1"
 $InstalledVerifier = Join-Path $InstallerRoot "scripts\verify-installed-clearline.ps1"
@@ -52,12 +53,30 @@ $SetupBuild = Join-Path $SetupRoot "build.rs"
 $SetupMain = Join-Path $SetupRoot "src\main.rs"
 $SetupManifest = Join-Path $SetupRoot "ClearLineSetup.exe.manifest"
 $VbCableZip = Join-Path $RepoRoot "third_party\vb-cable\VBCABLE_Driver_Pack45.zip"
+$InstallerWorkflow = Join-Path $RepoRoot ".github\workflows\windows-installer.yml"
 
 Assert-FileMissing -Path $LegacyIssPath
-foreach ($path in @($BuildScript, $ArtifactVerifier, $InstalledVerifier, $UninstalledVerifier, $HelperCargo, $HelperMain, $SetupCargo, $SetupBuild, $SetupMain, $SetupManifest)) {
+foreach ($path in @($BuildScript, $NsisScript, $ArtifactVerifier, $InstalledVerifier, $UninstalledVerifier, $HelperCargo, $HelperMain, $SetupCargo, $SetupBuild, $SetupMain, $SetupManifest)) {
     Assert-FileExists -Path $path
 }
+Assert-FileExists -Path $InstallerWorkflow
 Assert-FileExists -Path $VbCableZip
+
+$workflow = Get-Content -LiteralPath $InstallerWorkflow -Raw
+foreach ($marker in @(
+    "windows-latest",
+    "choco install nsis",
+    "DeepFilterNet3_onnx.tar.gz",
+    "VBCABLE_Driver_Pack45.zip",
+    "Get-FileHash",
+    "build-installer.ps1",
+    "actions/upload-artifact@v4",
+    "softprops/action-gh-release@v2",
+    "ClearLineSetup.exe",
+    "update.json"
+)) {
+    Assert-Contains -Text $workflow -Marker $marker -Label "windows-installer.yml"
+}
 
 $build = Get-Content -LiteralPath $BuildScript -Raw
 foreach ($marker in @(
@@ -66,6 +85,8 @@ foreach ($marker in @(
     "dist\ClearLine.exe",
     "cargo build -p clearline-installer-helper --release",
     "cargo build -p clearline-setup --release",
+    "makensis",
+    "ClearLine.nsi",
     "CLEARLINE_SETUP_STRICT_PAYLOAD",
     "ClearLineSetup.exe",
     "clearline-setup.exe",
@@ -80,6 +101,25 @@ foreach ($marker in @("clearline-driver\\artifacts\\package", "ClearLineVirtualA
 }
 foreach ($marker in @("ISCC.exe", "Inno Setup", "winget install --id JRSoftware.InnoSetup -e", "ClearLine.iss")) {
     Assert-NotContains -Text $build -Marker $marker -Label "build-installer.ps1"
+}
+
+$nsis = Get-Content -LiteralPath $NsisScript -Raw
+foreach ($marker in @(
+    "RequestExecutionLevel admin",
+    'Name "ClearLine"',
+    'OutFile "${OUTPUT_EXE}"',
+    'InstallDir "$PROGRAMFILES64\ClearLine"',
+    "MUI_PAGE_DIRECTORY",
+    "StartupPage",
+    "ExistingStartupCommand",
+    'ReadRegStr $ExistingStartupCommand HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ClearLine"',
+    "--start-on-login",
+    "--no-start-on-login",
+    "ClearLineSetupBackend.exe",
+    "--install --quiet --target",
+    'Icon "${APP_ICON}"'
+)) {
+    Assert-Contains -Text $nsis -Marker $marker -Label "ClearLine.nsi"
 }
 
 $setupBuildText = Get-Content -LiteralPath $SetupBuild -Raw
