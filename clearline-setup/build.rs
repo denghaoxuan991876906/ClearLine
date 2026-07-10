@@ -9,9 +9,14 @@ struct PayloadSpec {
 
 fn main() {
     println!("cargo:rerun-if-changed=ClearLineSetup.exe.manifest");
+    println!("cargo:rerun-if-changed=../clearline-app/assets/clearline.ico");
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
         embed_manifest::embed_manifest_file("ClearLineSetup.exe.manifest")
             .expect("embed ClearLineSetup.exe.manifest");
+        winresource::WindowsResource::new()
+            .set_icon("../clearline-app/assets/clearline.ico")
+            .compile()
+            .expect("embed ClearLine setup icon");
     }
 
     println!("cargo:rerun-if-env-changed=CLEARLINE_SETUP_STRICT_PAYLOAD");

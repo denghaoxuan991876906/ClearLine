@@ -26,3 +26,4 @@ windows-sys = { workspace = true, features = [
 
 [build-dependencies]
 embed-manifest = "1.5.0"
+winresource = "0.1.23"
