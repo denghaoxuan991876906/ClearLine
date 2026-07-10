@@ -2299,7 +2299,7 @@ mod tests {
     fn header_only_shows_noise_suppression_control() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let header_source = production_source
@@ -2320,7 +2320,7 @@ mod tests {
     fn tray_startup_setting_uses_background_task_to_avoid_ui_stall() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let startup_change = production_source
@@ -2339,7 +2339,7 @@ mod tests {
     fn wind_and_echo_effects_are_gated_by_noise_suppression() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
@@ -2377,7 +2377,7 @@ mod tests {
     fn app_updates_tray_menu_state_from_current_settings() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let update_source = production_source
@@ -2418,7 +2418,7 @@ mod tests {
     fn app_sources_route_startup_and_exit_through_tray_not_main_window() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
@@ -2540,7 +2540,7 @@ mod tests {
     fn default_recording_device_prompt_only_opens_sound_settings() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
@@ -2565,7 +2565,7 @@ mod tests {
     fn production_ui_omits_extra_runtime_lock_copy() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let removed_helper = ["running", "_lock", "_hint()"].concat();
@@ -2577,7 +2577,7 @@ mod tests {
     fn runtime_sensitive_controls_apply_live_in_source() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
@@ -2603,7 +2603,7 @@ mod tests {
     fn mode_card_omits_extra_toggle_descriptions() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
@@ -2623,7 +2623,7 @@ mod tests {
     fn wind_and_echo_toggles_share_one_compact_row() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let row_source = production_source
@@ -2674,7 +2674,7 @@ mod tests {
     fn app_auto_start_requires_input_and_vb_cable_output() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let auto_start = production_source
@@ -2771,7 +2771,7 @@ mod tests {
     fn device_tab_does_not_expose_manual_model_path_controls() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
         let manual_model_label = ["DeepFilterNet", " 模型目录"].concat();
@@ -3060,7 +3060,7 @@ mod tests {
     fn old_start_stop_control_is_not_in_production_ui() {
         let source = include_str!("main.rs");
         let production_source = source
-            .split("#[cfg(test)]\nmod tests")
+            .split("mod tests {")
             .next()
             .expect("production source section exists");
 
