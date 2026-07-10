@@ -1,0 +1,90 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis --yes --no-progress
+
+      - name: Download verified build payloads
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $modelUrl = "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/main/models/DeepFilterNet3_onnx.tar.gz"
+          $modelHash = "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
+          $modelArchive = Join-Path $env:RUNNER_TEMP "DeepFilterNet3_onnx.tar.gz"
+          Invoke-WebRequest -Uri $modelUrl -OutFile $modelArchive
+          if ((Get-FileHash $modelArchive -Algorithm SHA256).Hash -ne $modelHash) {
+            throw "DeepFilterNet archive SHA256 mismatch"
+          }
+          $modelExtract = Join-Path $env:RUNNER_TEMP "deepfilter-model"
+          New-Item -ItemType Directory -Force $modelExtract | Out-Null
+          tar -xzf $modelArchive -C $modelExtract
+          $modelOutput = Join-Path $PWD "dist\models\deepfilternet"
+          New-Item -ItemType Directory -Force $modelOutput | Out-Null
+          Copy-Item (Join-Path $modelExtract "tmp\export\*") $modelOutput -Force
+          [ordered]@{
+            source_url = $modelUrl
+            archive_sha256 = $modelHash
+            model = "DeepFilterNet3_onnx"
+          } | ConvertTo-Json | Set-Content (Join-Path $modelOutput "source.json") -Encoding UTF8
+
+          $vbUrl = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip"
+          $vbHash = "b950e39f01af1d04ea623c8f6d8eb9b6ea5c477c637295fabf20631c85116bfb"
+          $vbOutput = Join-Path $PWD "third_party\vb-cable\VBCABLE_Driver_Pack45.zip"
+          Invoke-WebRequest -Uri $vbUrl -OutFile $vbOutput
+          if ((Get-FileHash $vbOutput -Algorithm SHA256).Hash -ne $vbHash) {
+            throw "VB-CABLE archive SHA256 mismatch"
+          }
+
+      - name: Run tests
+        shell: powershell
+        run: |
+          cargo test -p clearline-app --no-default-features
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-installer-layout.ps1
+
+      - name: Build NSIS installer
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\clearline-installer\scripts\build-installer.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClearLine-windows-${{ github.sha }}
+          path: |
+            artifacts/installer/ClearLineSetup.exe
+            artifacts/installer/update.json
+          if-no-files-found: error
+
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/installer/ClearLineSetup.exe
+            artifacts/installer/update.json

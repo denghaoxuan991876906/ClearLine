@@ -1,6 +1,8 @@
 # ClearLine self-contained installer
 
-This directory contains build and verification scripts for the native Rust ClearLine installer. The generated installer is a single self-contained `ClearLineSetup.exe` and does not require users to install any external setup runtime. Double-clicking `ClearLineSetup.exe` shows a native MSI-style install wizard where users can keep the default path or choose another install directory, then choose whether ClearLine should start with Windows.
+This directory contains the NSIS definition plus build and verification scripts for the ClearLine installer. The generated installer is a single self-contained `ClearLineSetup.exe` and does not require users to install any external setup runtime. Double-clicking it shows a standard NSIS wizard where users can choose the install directory and whether ClearLine should start with Windows.
+
+NSIS is the distribution and wizard layer. The existing Rust `clearline-setup` executable is embedded as a silent backend and continues to own payload extraction, VB-CABLE installation, default audio endpoint restoration, registry entries, shortcuts, logging, and uninstall behavior.
 
 The installer embeds:
 
@@ -35,6 +37,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\clearline-installer\script
 
 ## Build installer
 
+Build prerequisite: NSIS 3.x with `makensis.exe` available on `PATH` or installed under the standard Program Files NSIS directory.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\clearline-installer\scripts\build-installer.ps1
 ```
@@ -43,7 +47,10 @@ Output:
 
 ```text
 artifacts\installer\ClearLineSetup.exe
+artifacts\installer\update.json
 ```
+
+Upload both files as assets of the matching GitHub Release tag (for example `v0.2.0`). ClearLine checks the stable manifest at `releases/latest/download/update.json`; the generated manifest points to the versioned installer asset and includes its SHA256 digest.
 
 When launched from a non-administrator command prompt, the setup exe triggers UAC and waits for the elevated install/uninstall process before returning its exit code. This keeps quiet-mode developer verification scripts tied to the real elevated result:
 
