@@ -17,6 +17,8 @@ eframe = { workspace = true, default-features = false, features = ["default_font
 directories.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
+ureq = { version = "3.1.4", default-features = false, features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
